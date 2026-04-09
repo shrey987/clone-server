@@ -4,10 +4,11 @@ Pre-built structural fixes applied to every cloned page BEFORE brand changes.
 Does NOT do any brand changes — only fixes structural/render issues.
 
 Handles:
-  1. VSL video gates (height:0, display:none on pricing sections)
-  2. Wistia/video script removal + poster image placeholder
-  3. Lazy-load fix (data-src → src)
-  4. Social proof script 404 silencing
+  1. Popup/modal removal (Klaviyo, Privy, generic modals, email capture overlays)
+  2. VSL video gates (height:0, display:none on pricing sections)
+  3. Wistia/video script removal + poster image placeholder
+  4. Lazy-load fix (data-src → src)
+  5. Social proof script 404 silencing
 
 Usage: python3 structural-transform.py <job_dir>
 """
@@ -22,6 +23,49 @@ with open(html_path, 'r', encoding='utf-8', errors='ignore') as f:
     html = f.read()
 
 original_len = len(html)
+
+# ── 0. Remove popups, modals, and email capture overlays ─────────────────────
+# These are JS-driven and show on page load — they block the actual content.
+# Remove the scripts that power them, then inject CSS to hide any residual DOM.
+
+# Remove popup service scripts by src
+html = re.sub(
+    r'<script[^>]+src=["\'][^"\']*(?:klaviyo|privy\.com|justuno|optinmonster|sumo\.com|wheelio|poptin|wisepops|sleeknote|mailchimp.*form|popup\.js)[^"\']*["\'][^>]*>.*?</script>',
+    '', html, flags=re.DOTALL | re.IGNORECASE
+)
+
+# Remove inline Klaviyo / popup bootstrap scripts
+html = re.sub(
+    r'<script[^>]*>(?:[^<]|<(?!/script>))*?(?:_klOnsite|klaviyo|KlaviyoSubscribe|window\.klaviyo|privy\.com|OptinMonster|sumo\.com)[^<]*(?:<(?!/script>)[^<]*)*?</script>',
+    '', html, flags=re.DOTALL | re.IGNORECASE
+)
+
+# Inject CSS to force-hide all popup/modal/overlay elements
+popup_kill_css = '''<style id="clone-popup-kill">
+  /* ── Clone server: popup/modal kill ── */
+  [class*="popup"], [class*="modal"], [class*="overlay"], [class*="lightbox"],
+  [class*="klaviyo"], [class*="privy"], [class*="optin"], [class*="email-capture"],
+  [id*="popup"], [id*="modal"], [id*="overlay"], [id*="lightbox"],
+  [id*="klaviyo"], [id*="privy"],
+  .needsclick, .swipe-overlay, #swipeOverlay, .modal-overlay,
+  .pf-content, .pf-scroll, [class*="pf-"],
+  /* Fixed full-screen covers (common popup pattern) */
+  div[style*="position:fixed"][style*="z-index"],
+  div[style*="position: fixed"][style*="z-index"] {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+  /* Always restore scroll in case popup locked it */
+  body, html { overflow: auto !important; }
+</style>'''
+
+if '</head>' in html:
+    html = html.replace('</head>', popup_kill_css + '\n</head>', 1)
+elif '<body' in html:
+    html = html.replace('<body', popup_kill_css + '\n<body', 1)
+
+print(f'Popup removal done. Klaviyo refs remaining: {len(re.findall(r"klaviyo", html, re.I))}')
 
 # ── 1. Remove Wistia / video player scripts ──────────────────────────────────
 # Remove <script> tags whose src contains video platform keywords
