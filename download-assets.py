@@ -9,7 +9,7 @@ Usage: python3 download-assets.py <job_dir> <base_url>
   base_url — original page URL, used to resolve relative paths
 """
 
-import sys, os, re, urllib.request, urllib.parse, hashlib
+import sys, os, re, urllib.request, urllib.parse, hashlib, html as _html_mod
 
 job_dir  = sys.argv[1]
 base_url = sys.argv[2] if len(sys.argv) > 2 else ''
@@ -64,6 +64,10 @@ for pat in patterns:
             candidate = part.strip().split(' ')[0]   # drop descriptor like "2x"
             if candidate:
                 raw_urls.add(candidate)
+                # Also add HTML-unescaped version (&amp; → &) for proper downloading
+                unescaped = _html_mod.unescape(candidate)
+                if unescaped != candidate:
+                    raw_urls.add(unescaped)
 
 # Resolve to absolute and filter to asset extensions
 all_urls = set()
@@ -71,6 +75,8 @@ for raw in raw_urls:
     abs_url = resolve(raw)
     if not abs_url:
         continue
+    # Unescape HTML entities in URL for proper HTTP request
+    abs_url = _html_mod.unescape(abs_url)
     clean = abs_url.split('?')[0].lower()
     if any(clean.endswith(e) for e in ASSET_EXTS):
         all_urls.add((raw, abs_url))
@@ -78,23 +84,46 @@ for raw in raw_urls:
 print(f'Found {len(all_urls)} asset URLs to download')
 
 url_map = {}  # original ref → local path
+# Group URLs by base (no query string) so we download once and map all variants
+base_to_file = {}  # base_abs_url → local fname
 for (raw, abs_url) in all_urls:
+    base_abs = abs_url.split('?')[0]
     try:
-        h    = hashlib.md5(abs_url.encode()).hexdigest()[:8]
-        fname = h + '-' + os.path.basename(abs_url.split('?')[0])[:60]
-        local = os.path.join(assets_dir, fname)
-        if not os.path.exists(local):
-            req = urllib.request.Request(
-                abs_url,
-                headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = resp.read()
-            with open(local, 'wb') as f:
-                f.write(data)
-        url_map[raw]     = 'assets/' + fname   # replace raw ref
-        url_map[abs_url] = 'assets/' + fname   # also replace absolute ref if present
-        print(f'OK: {fname}  ({abs_url[:60]})')
+        if base_abs not in base_to_file:
+            h = hashlib.md5(base_abs.encode()).hexdigest()[:8]
+            fname = h + '-' + os.path.basename(base_abs)[:60]
+            local = os.path.join(assets_dir, fname)
+            if not os.path.exists(local):
+                req = urllib.request.Request(
+                    abs_url,  # download with query params (CDN may return resized)
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                        'Referer': origin + '/',
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = resp.read()
+                # Verify it's a real file, not an error page
+                if len(data) < 200 and b'<html' in data.lower():
+                    print(f'SKIP (HTML error page): {abs_url[:70]}')
+                    continue
+                with open(local, 'wb') as f:
+                    f.write(data)
+            base_to_file[base_abs] = fname
+            print(f'OK: {fname}  ({abs_url[:60]})')
+
+        fname = base_to_file.get(base_abs)
+        if fname:
+            local_path = 'assets/' + fname
+            url_map[raw] = local_path
+            url_map[abs_url] = local_path
+            # Also map the HTML-escaped version (&amp; etc.)
+            escaped_raw = raw.replace('&', '&amp;')
+            if escaped_raw != raw:
+                url_map[escaped_raw] = local_path
+            escaped_abs = abs_url.replace('&', '&amp;')
+            if escaped_abs != abs_url:
+                url_map[escaped_abs] = local_path
     except Exception as e:
         print(f'SKIP: {abs_url[:70]}: {e}')
 
