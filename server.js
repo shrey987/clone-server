@@ -125,7 +125,7 @@ print('Headlines found:', titles)
 7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
 8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
 9. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
-10. Output the Vercel URL on its own line as: DEPLOYED_URL=https://[url]`;
+10. Output EXACTLY this line (no markdown, no asterisks): DEPLOYED_URL=https://clone-${jobId.slice(0,8)}.vercel.app`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
@@ -170,11 +170,7 @@ print('Headlines found:', titles)
           let result;
           if (block.name === 'bash') {
             result = runBash(block.input.command);
-            // Check if deploy output has a URL
-            if (block.input.command.includes('vercel deploy')) {
-              const match = (result.output || '').match(/https:\/\/[a-z0-9-]+\.vercel\.app/g);
-              if (match) deployedUrl = match[match.length - 1];
-            }
+            // URL is extracted from the agent's text block DEPLOYED_URL= output
           } else if (block.name === 'read_file') {
             result = readFile(block.input.path);
           } else if (block.name === 'write_file') {
@@ -191,6 +187,14 @@ print('Headlines found:', titles)
         messages.push({ role: 'user', content: toolResults });
       }
     }
+  }
+
+  // Fallback: if agent didn't output DEPLOYED_URL, construct from known project name
+  if (!deployedUrl) {
+    const projectName = `clone-${jobId.slice(0,8)}`;
+    const projectUrl = `https://${projectName}.vercel.app`;
+    const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
+    if (check && check.status < 400) deployedUrl = projectUrl;
   }
 
   return deployedUrl;
