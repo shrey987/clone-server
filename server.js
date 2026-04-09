@@ -121,10 +121,11 @@ print('Headlines found:', titles)
    - Fix lazy-loaded images (src="" → src=data-src value)
    - Write the modified HTML back to ${jobDir}/page.html
 5. bash: python3 ${jobDir}/transform.py && echo "Transform done"
-6. bash: mkdir -p ${jobDir}/clone && cp ${jobDir}/page.html ${jobDir}/clone/index.html && cp -r ${jobDir}/assets ${jobDir}/clone/assets && cp -r ${jobDir}/uploads ${jobDir}/clone/uploads 2>/dev/null || true
-7. write_file: ${jobDir}/clone/vercel.json with content: {"version":2}
-8. bash: cd ${jobDir}/clone && vercel deploy --prod --yes --scope grrow --token ${vercelToken} --name clone-${jobId.slice(0,8)}
-9. Output the Vercel URL on its own line as: DEPLOYED_URL=https://[url]`;
+6. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
+7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
+8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
+9. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
+10. Output the Vercel URL on its own line as: DEPLOYED_URL=https://[url]`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
