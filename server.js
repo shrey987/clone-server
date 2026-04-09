@@ -68,12 +68,16 @@ YOUR STEPS (execute all of them in order):
 10. On the VERY LAST LINE of your entire output, print exactly (no extra spaces): DEPLOYED_URL=https://[the-vercel-url]`;
 
     console.log(`[${jobId}] Running Claude Code...`);
-    const result = spawnSync('claude', ['--dangerously-skip-permissions', '-p', prompt], {
+    // Spawn as uid 1000 (non-root) — Claude Code refuses --dangerously-skip-permissions as root
+    const spawnOpts = {
       timeout: 300000,
       encoding: 'utf8',
-      env: { ...process.env },
+      env: { ...process.env, HOME: '/home/appuser' },
       maxBuffer: 20 * 1024 * 1024
-    });
+    };
+    try { spawnOpts.uid = 1000; spawnOpts.gid = 1000; } catch(e) {}
+
+    const result = spawnSync('claude', ['--dangerously-skip-permissions', '-p', prompt], spawnOpts);
 
     const output = (result.stdout || '') + (result.stderr || '');
     console.log(`[${jobId}] Output tail:\n${output.slice(-800)}`);
