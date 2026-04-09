@@ -56,9 +56,47 @@ popup_kill_css = '''<style id="clone-popup-kill">
     visibility: hidden !important;
     pointer-events: none !important;
   }
-  /* Always restore scroll in case popup locked it */
-  body, html { overflow: auto !important; }
-</style>'''
+  /* Klaviyo adds klaviyo-prevent-body-scrolling class to <body> which sets visibility:hidden
+     and hides the ENTIRE page. Force body visible regardless. */
+  body.klaviyo-prevent-body-scrolling,
+  body[class*="klaviyo"],
+  body[class*="prevent-scroll"],
+  body[class*="modal-open"],
+  body[class*="popup-open"],
+  body[style*="overflow: hidden"],
+  body[style*="overflow:hidden"] {
+    visibility: visible !important;
+    overflow: auto !important;
+  }
+  body, html { overflow: auto !important; visibility: visible !important; }
+</style>
+<script id="clone-popup-js-kill">
+// Remove Klaviyo body class immediately and on any DOM mutation
+(function() {
+  var badClasses = ['klaviyo-prevent-body-scrolling','modal-open','popup-open','no-scroll','overflow-hidden'];
+  function cleanBody() {
+    badClasses.forEach(function(c) { document.body && document.body.classList.remove(c); });
+    if (document.body) {
+      document.body.style.setProperty('visibility','visible','important');
+      document.body.style.setProperty('overflow','auto','important');
+    }
+  }
+  document.addEventListener('DOMContentLoaded', cleanBody);
+  window.addEventListener('load', cleanBody);
+  setTimeout(cleanBody, 0);
+  setTimeout(cleanBody, 200);
+  setTimeout(cleanBody, 800);
+  // MutationObserver to catch Klaviyo adding class after load
+  var obs = new MutationObserver(function(muts) {
+    muts.forEach(function(m) {
+      if (m.type === 'attributes' && m.attributeName === 'class') cleanBody();
+    });
+  });
+  document.addEventListener('DOMContentLoaded', function() {
+    if (document.body) obs.observe(document.body, { attributes: true });
+  });
+})();
+</script>'''
 
 if '</head>' in html:
     html = html.replace('</head>', popup_kill_css + '\n</head>', 1)
