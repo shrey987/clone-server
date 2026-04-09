@@ -12,6 +12,10 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // Tool: run a bash command and return output
 function runBash(command) {
+  // Hard block: never allow running the claude CLI
+  if (/\bclaude\b/.test(command) && !command.includes('claudedata')) {
+    return { success: false, output: 'Blocked: do not use the claude CLI. Use the provided tools (bash for curl/cp/python3/vercel, read_file, write_file) instead.' };
+  }
   try {
     const out = execSync(command, { timeout: 60000, encoding: 'utf8', stdio: ['pipe','pipe','pipe'] });
     return { success: true, output: out };
