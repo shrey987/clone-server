@@ -106,7 +106,7 @@ IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, w
 
 STEPS:
 1. bash: node /app/playwright-capture.js "${url}" ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
-2. bash: python3 /app/download-assets.py "${jobDir}"
+2. bash: python3 /app/download-assets.py "${jobDir}" "${url}"
 3. bash: python3 -c "
 import re
 with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()
