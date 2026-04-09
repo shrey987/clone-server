@@ -40,6 +40,17 @@ if (!url || !outputFile) {
 
   const page = await context.newPage();
 
+  // ── Block popup/modal service scripts from loading at all ─────────────────
+  // If Klaviyo/Privy JS never loads, the popup never gets created.
+  await page.route('**/*klaviyo*', route => route.abort());
+  await page.route('**/*privy*', route => route.abort());
+  await page.route('**/*justuno*', route => route.abort());
+  await page.route('**/*optinmonster*', route => route.abort());
+  await page.route('**/*sumo.com*', route => route.abort());
+  await page.route('**/*wisepops*', route => route.abort());
+  await page.route('**/*sleeknote*', route => route.abort());
+  console.log('Popup service scripts blocked via route interception');
+
   try {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
   } catch (e) {
