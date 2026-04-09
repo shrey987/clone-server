@@ -152,7 +152,7 @@ print('Headlines found:', titles)
       if (block.type === 'text') {
         const match = block.text.match(/DEPLOYED_URL=(https:\/\/[a-zA-Z0-9\-\.]+\.vercel\.app)/);
         if (match) {
-          deployedUrl = match[1].trim().replace(/[^a-zA-Z0-9:/.]/g, '');
+          deployedUrl = match[1].trim().replace(/[^a-zA-Z0-9:/.\-]/g, '');
           console.log(`[Agent] Got URL: ${deployedUrl}`);
         }
       }
@@ -173,7 +173,7 @@ print('Headlines found:', titles)
             // Check if deploy output has a URL
             if (block.input.command.includes('vercel deploy')) {
               const match = (result.output || '').match(/https:\/\/[a-z0-9-]+\.vercel\.app/g);
-              if (match) deployedUrl = match[match.length - 1].replace(/[^a-zA-Z0-9:/.]/g, '');
+              if (match) deployedUrl = match[match.length - 1].replace(/[^a-zA-Z0-9:/.\-]/g, '');
             }
           } else if (block.name === 'read_file') {
             result = readFile(block.input.path);
