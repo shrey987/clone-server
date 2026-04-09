@@ -108,10 +108,42 @@ wistia_css = f'''<style id="clone-video-fix">
   #LoadingDiv {{ display: none !important; }}
 </style>'''
 
+# JS fix: page JS runs after load and overrides CSS, re-collapsing #video1 to 6px.
+# Inject a script at end of <body> that uses setProperty('!important') to win back.
+poster_src = poster_img if poster_img else ''
+video_js = f'''<script id="clone-video-js">
+(function() {{
+  function fixVideo() {{
+    ['video1','video','video2'].forEach(function(id) {{
+      var el = document.getElementById(id);
+      if (el) {{
+        el.style.setProperty('height','auto','important');
+        el.style.setProperty('overflow','visible','important');
+      }}
+    }});
+    document.querySelectorAll('[id^="ekran"]').forEach(function(e) {{
+      e.style.setProperty('display','block','important');
+      e.style.setProperty('height','auto','important');
+      e.style.setProperty('overflow','visible','important');
+    }});
+    ['video-poster-placeholder','thumb'].forEach(function(id) {{
+      var el = document.getElementById(id);
+      if (el) el.style.setProperty('display','block','important');
+    }});
+  }}
+  window.addEventListener('load', fixVideo);
+  setTimeout(fixVideo, 500);
+  setTimeout(fixVideo, 1500);
+}})();
+</script>'''
+
 if '</head>' in html:
     html = html.replace('</head>', wistia_css + '\n</head>', 1)
 elif '<body' in html:
     html = html.replace('<body', wistia_css + '\n<body', 1)
+
+if '</body>' in html:
+    html = html.replace('</body>', video_js + '\n</body>', 1)
 
 # ── 3. Strip VSL video gates ──────────────────────────────────────────────────
 # VSL pages hide pricing/CTA sections until video plays, using either:
