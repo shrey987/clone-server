@@ -189,17 +189,28 @@ if '/products/' in base_url:
   <div id="clone-hero-thumbs" style="display:flex;gap:8px;overflow-x:auto;">{thumbs}</div>
 </div>'''
 
-            # Remove ALL Replo carousel elements from DOM (they render as 0x0 on static clones)
-            # Match the full carousel block: <div data-replo-component-root="carousel" ...>...</div>
-            # Use a depth-tracking approach to find the matching closing tag
-            carousel_starts = list(re.finditer(r'<div[^>]*data-replo-component-root="carousel"[^>]*>', html))
-            if carousel_starts:
-                # Remove each carousel by tracking div nesting depth
-                removed = 0
-                for cm in reversed(carousel_starts):  # reverse to preserve earlier indices
-                    start = cm.start()
+            # Replace ONLY the first product carousel (data-replo-part="slides")
+            # This is the main product image gallery. Other carousels (testimonials, UGC) stay.
+            first_slides = re.search(
+                r'<div[^>]*data-replo-part="slides"[^>]*data-replo-root-id="[^"]*"[^>]*>',
+                html
+            )
+            if first_slides:
+                # Walk backwards to find the outermost wrapper div for this carousel section
+                # Look for the nearest ancestor that's a Replo component wrapper
+                search_back = max(0, first_slides.start() - 3000)
+                pre = html[search_back:first_slides.start()]
+
+                # Find parent divs with data-rid (Replo component wrappers)
+                parent_divs = list(re.finditer(r'<div[^>]*data-rid="[^"]*"[^>]*class="r-[^"]*"[^>]*>', pre))
+
+                if parent_divs:
+                    # Use the parent as our removal target
+                    parent_start = search_back + parent_divs[-1].start()
+
+                    # Track div depth from parent to find its closing tag
                     depth = 1
-                    pos = cm.end()
+                    pos = search_back + parent_divs[-1].end()
                     while depth > 0 and pos < len(html):
                         next_open = html.find('<div', pos)
                         next_close = html.find('</div>', pos)
@@ -211,16 +222,15 @@ if '/products/' in base_url:
                         else:
                             depth -= 1
                             if depth == 0:
-                                end = next_close + 6  # len('</div>')
-                                # Replace this carousel with nothing (first one gets the gallery)
-                                if removed == 0:
-                                    html = html[:start] + gallery_html + html[end:]
-                                else:
-                                    html = html[:start] + html[end:]
-                                removed += 1
+                                end = next_close + 6
+                                html = html[:parent_start] + gallery_html + html[end:]
+                                print(f'Replaced product carousel ({end - parent_start} chars) with static gallery ({len(shopify_imgs)} images)')
                                 break
                             pos = next_close + 6
-                print(f'Replaced {removed} Replo carousel(s) with static gallery ({len(shopify_imgs)} images)')
+                else:
+                    # No parent wrapper found, just inject before the slides
+                    html = html[:first_slides.start()] + gallery_html + html[first_slides.start():]
+                    print(f'Injected static gallery before first carousel slides')
     except Exception as e:
         print(f'Shopify product image injection failed: {e}')
 
