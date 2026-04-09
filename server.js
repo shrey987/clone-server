@@ -80,7 +80,14 @@ async function runCloneAgent(jobDir, url, instructions, vercelToken) {
 
 Job directory: ${jobDir}
 Vercel token: ${vercelToken}
-Vercel scope: grrow`;
+Vercel scope: grrow
+
+CRITICAL RULES:
+- NEVER run the "claude" command in bash. Never. Not for any reason.
+- Use ONLY these tools: bash (for curl, cp, mkdir, python3, vercel), read_file, write_file
+- Use bash for all file system operations and deployments
+- Use read_file to read HTML files
+- Use write_file to write modified HTML files`;
 
   const userMessage = `Clone this landing page: ${url}
 
