@@ -153,7 +153,7 @@ After deploying, output the final URL on its own line as: DEPLOYED_URL=https://.
       const toolResults = [];
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          console.log(`[Agent] Tool: ${block.name}`, block.input.command || block.input.path || '');
+          console.log(`[Agent] Tool: ${block.name} | input: ${JSON.stringify(block.input).slice(0, 200)}`);
           let result;
           if (block.name === 'bash') {
             result = runBash(block.input.command);
