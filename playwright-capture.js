@@ -1,31 +1,84 @@
 /**
- * playwright-capture.js
- * Renders a URL in headless Chromium and saves the full DOM to a file.
- * Bypasses Cloudflare and JS-gated pages that curl can't handle.
- * Usage: node playwright-capture.js <url> <outputFile>
+ * playwright-capture.js v2
+ * Bulletproof page capture engine with route-level asset interception.
  *
- * Handles:
- *  - Cloudflare challenges (real browser UA + headers)
- *  - Replo / Shopify page builders (waits for {{template}} vars to resolve)
- *  - Webflow, React, and other SPA frameworks
- *  - Lazy-loaded images (scroll-to-bottom before capture)
+ * Architecture:
+ *   1. Block popup/tracking/analytics scripts via @ghostery/adblocker + manual domain list
+ *   2. Intercept all image/font/css/media responses via page.route, save to assets/
+ *   3. Wait for full render via MutationObserver DOM quiescence + template var polling
+ *   4. Remove overlay DOM nodes (popups, modals, country selectors)
+ *   5. Capture page.content(), rewrite all URLs to local assets/ paths
+ *
+ * Usage: node playwright-capture.js <url> <jobDir>
+ *   jobDir must contain an empty assets/ directory
+ *   Produces: jobDir/page.html + jobDir/assets/* + jobDir/asset-manifest.json
  */
 
 const { chromium } = require('playwright');
+const { PlaywrightBlocker } = require('@ghostery/adblocker-playwright');
+const fetch = require('cross-fetch');
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
 const url = process.argv[2];
-const outputFile = process.argv[3];
+const jobDir = process.argv[3];
 
-if (!url || !outputFile) {
-  console.error('Usage: node playwright-capture.js <url> <outputFile>');
+if (!url || !jobDir) {
+  console.error('Usage: node playwright-capture.js <url> <jobDir>');
   process.exit(1);
 }
 
+const assetsDir = path.join(jobDir, 'assets');
+fs.mkdirSync(assetsDir, { recursive: true });
+
+// Domains to block entirely (popup services, analytics, chat widgets)
+const BLOCK_DOMAINS = [
+  // Email capture
+  'klaviyo.com', 'a.klaviyo.com', 'static.klaviyocdn.com',
+  'privy.com', 'static.privy.com',
+  'optinmonster.com', 'app.optinmonster.com', 'api.optinmonster.com',
+  'justuno.com', 'app.justuno.com',
+  'sumo.com', 'sumo.io', 'sumome.com', 'load.sumo.com',
+  'poptin.com', 'wisepops.com', 'getsitecontrol.com', 'sleeknote.com',
+  // Cookie consent
+  'cdn.cookielaw.org', 'geolocation.onetrust.com', 'optanon.blob.core.windows.net',
+  'cdn.cookiebot.com', 'consent.cookiebot.com',
+  'usercentrics.eu', 'app.usercentrics.eu',
+  // Chat widgets
+  'widget.intercom.io', 'js.intercomcdn.com', 'api-iam.intercom.io',
+  'js.driftt.com', 'drift.com',
+  'widget.crisp.chat', 'client.crisp.chat',
+  'static.zdassets.com', 'ekr.zdassets.com',
+  'embed.tawk.to',
+  'cdn.lr-ingest.io', 'cdn.logrocket.io',
+  // Analytics/tracking
+  'www.googletagmanager.com', 'www.google-analytics.com', 'analytics.google.com',
+  'connect.facebook.net', 'www.facebook.com',
+  'static.hotjar.com', 'script.hotjar.com',
+  'cdn.heapanalytics.com', 'cdn.segment.com',
+  'cdn.amplitude.com', 'api2.amplitude.com',
+  'plausible.io', 'cdn.usefathom.com',
+  'bat.bing.com', 'snap.licdn.com',
+  'sc-static.net', 'sentry.io',
+  // Shopify-specific (cart/checkout that 404 on static hosting)
+  'monorail-edge.shopifysvc.net',
+];
+
+// Asset types worth intercepting
+const ASSET_RESOURCE_TYPES = ['image', 'stylesheet', 'font', 'media'];
+const ASSET_EXTENSIONS = /\.(jpg|jpeg|png|webp|gif|svg|avif|ico|mp4|webm|mov|woff2?|ttf|otf|eot|css)(\?|$|#)/i;
+
 (async () => {
+  // ── Phase 1: Setup ────────────────────────────────────────────────────────
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+    ]
   });
 
   const context = await browser.newContext({
@@ -34,33 +87,120 @@ if (!url || !outputFile) {
     locale: 'en-US',
     extraHTTPHeaders: {
       'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     }
   });
 
   const page = await context.newPage();
 
-  // ── Block popup/modal service scripts from loading at all ─────────────────
-  // If Klaviyo/Privy JS never loads, the popup never gets created.
-  await page.route('**/*klaviyo*', route => route.abort());
-  await page.route('**/*privy*', route => route.abort());
-  await page.route('**/*justuno*', route => route.abort());
-  await page.route('**/*optinmonster*', route => route.abort());
-  await page.route('**/*sumo.com*', route => route.abort());
-  await page.route('**/*wisepops*', route => route.abort());
-  await page.route('**/*sleeknote*', route => route.abort());
-  console.log('Popup service scripts blocked via route interception');
-
+  // Enable Ghostery adblocker (blocks most popup/tracking scripts automatically)
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    const blocker = await PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch);
+    await blocker.enableBlockingInPage(page);
+    console.log('Ghostery adblocker enabled');
   } catch (e) {
-    console.log('networkidle timeout, capturing current state:', e.message);
+    console.log('Ghostery adblocker failed to load, using manual blocking only:', e.message);
   }
 
-  // Initial render wait
-  await page.waitForTimeout(3000);
+  // Inject init scripts to kill popup globals BEFORE any page JS runs
+  await page.addInitScript(() => {
+    // Kill email capture / popup globals
+    const noop = () => {};
+    const noopObj = new Proxy({}, { get: () => noop });
+    ['Klaviyo', '_klOnsite', 'KlaviyoSubscribe'].forEach(k => {
+      try { Object.defineProperty(window, k, { get: () => noopObj, set: noop, configurable: true }); } catch(e) {}
+    });
+    ['Privy', 'OptinMonster', 'om_loaded'].forEach(k => {
+      try { Object.defineProperty(window, k, { get: () => undefined, set: noop, configurable: true }); } catch(e) {}
+    });
+    // Kill chat widgets
+    ['Intercom', 'drift', '$crisp', 'zE', 'Tawk_API'].forEach(k => {
+      try { Object.defineProperty(window, k, { get: () => noop, set: noop, configurable: true }); } catch(e) {}
+    });
+    // Kill OneTrust / cookie consent
+    ['OneTrust', 'OptanonWrapper', 'CookieBot'].forEach(k => {
+      try { Object.defineProperty(window, k, { get: () => undefined, set: noop, configurable: true }); } catch(e) {}
+    });
+    // Set Shopify locale to prevent country selector modal
+    window.Shopify = window.Shopify || {};
+    window.Shopify.country = 'US';
+    window.Shopify.locale = 'en';
+    window.Shopify.currency = { active: 'USD', rate: '1.0' };
+    // Disable service workers
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.getRegistrations().then(r => r.forEach(reg => reg.unregister()));
+    }
+  });
 
-  // ── Scroll through entire page to trigger lazy-load ──────────────────────────
+  // ── Asset interception via page.route ───────────────────────────────────
+  const urlMap = new Map(); // original URL string → local assets/ path
+  let assetCounter = 0;
+
+  await page.route('**/*', async (route) => {
+    const req = route.request();
+    const reqUrl = req.url();
+
+    // Block popup/tracking domains
+    if (BLOCK_DOMAINS.some(d => reqUrl.includes(d))) {
+      return route.abort().catch(() => {});
+    }
+
+    const resourceType = req.resourceType();
+
+    // Intercept assets: save to disk and build URL map
+    if (ASSET_RESOURCE_TYPES.includes(resourceType) || ASSET_EXTENSIONS.test(reqUrl)) {
+      try {
+        const response = await route.fetch();
+        const buffer = await response.body();
+
+        // Skip tiny responses or HTML error pages
+        if (buffer.length < 100 && buffer.toString().includes('<html')) {
+          await route.fulfill({ response });
+          return;
+        }
+
+        // Generate filename from URL
+        const urlObj = new URL(reqUrl);
+        const baseName = path.basename(urlObj.pathname).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
+        const hash = crypto.createHash('md5').update(reqUrl).digest('hex').slice(0, 8);
+        const fileName = `${hash}-${baseName || 'asset'}`;
+        const localPath = path.join(assetsDir, fileName);
+
+        fs.writeFileSync(localPath, buffer);
+        urlMap.set(reqUrl, `assets/${fileName}`);
+
+        // Also map the URL without query string (many HTML refs strip params)
+        const noQuery = reqUrl.split('?')[0];
+        if (noQuery !== reqUrl && !urlMap.has(noQuery)) {
+          urlMap.set(noQuery, `assets/${fileName}`);
+        }
+
+        assetCounter++;
+        await route.fulfill({ response, body: buffer });
+      } catch (e) {
+        // Fetch failed (CORS, timeout, etc.) — let it through
+        await route.continue().catch(() => {});
+      }
+      return;
+    }
+
+    // Everything else: pass through
+    await route.continue().catch(() => {});
+  });
+
+  // ── Phase 2: Navigate + wait for full render ──────────────────────────────
+  console.log(`Navigating to ${url}...`);
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    console.log('Navigation timeout, capturing current state:', e.message);
+  }
+
+  // Initial wait for critical resources
+  await page.waitForTimeout(2000);
+
+  // Incremental scroll to trigger ALL lazy-load / IntersectionObserver elements
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let totalHeight = 0;
@@ -79,53 +219,55 @@ if (!url || !outputFile) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(500);
 
-  // ── Wait for JS framework template variables to resolve ──────────────────────
-  // Replo, Webflow, and Shopify page builders use {{variable}} syntax.
-  // If still present after initial load, wait up to 15 more seconds.
-  const hasTemplateVars = async () => {
-    return await page.evaluate(() => {
-      const body = document.body ? document.body.innerHTML : '';
-      // Check for unresolved {{...}} in img src/alt or any element attribute
-      return /\{\{[^}]+\}\}/.test(body);
+  // MutationObserver: wait for DOM to stabilize (500ms of silence)
+  await page.evaluate(() => {
+    return new Promise((resolve) => {
+      let timeout;
+      const maxWait = setTimeout(() => { observer.disconnect(); resolve(); }, 10000);
+      const observer = new MutationObserver(() => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          observer.disconnect();
+          clearTimeout(maxWait);
+          resolve();
+        }, 500);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      // Bootstrap timer in case DOM is already stable
+      timeout = setTimeout(() => {
+        observer.disconnect();
+        clearTimeout(maxWait);
+        resolve();
+      }, 500);
     });
-  };
+  });
+  console.log('DOM stabilized');
 
+  // Template variable polling (Replo, GemPages, etc.)
   let templateAttempts = 0;
-  while (await hasTemplateVars() && templateAttempts < 5) {
+  while (templateAttempts < 5) {
+    const hasTemplateVars = await page.evaluate(() => /\{\{[^}]+\}\}/.test(document.body.innerHTML));
+    if (!hasTemplateVars) break;
     templateAttempts++;
-    console.log(`Template vars still present (attempt ${templateAttempts}/5), waiting 3s...`);
+    console.log(`Template vars present (attempt ${templateAttempts}/5), waiting 3s...`);
     await page.waitForTimeout(3000);
-    // Re-scroll to trigger any remaining renders
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForTimeout(1000);
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); });
+    await page.waitForTimeout(500);
+    await page.evaluate(() => { window.scrollTo(0, 0); });
   }
 
-  if (templateAttempts > 0) {
-    const stillHas = await hasTemplateVars();
-    console.log(`Template var resolution: ${stillHas ? 'STILL HAS unresolved vars after ' + templateAttempts + ' attempts' : 'RESOLVED'}`);
-  }
-
-  // ── Remove popups, modals, and overlays from DOM BEFORE capture ────────────
-  // CSS can't beat inline !important styles. Remove elements entirely from DOM.
+  // Remove popup/modal/overlay DOM nodes that survived blocking
   const removedCount = await page.evaluate(() => {
     let removed = 0;
-
-    // 1. Remove popup services, country selectors, cookie banners, and modal elements
+    // Remove by selector
     const popupSelectors = [
       '[class*="klaviyo"]', '[id*="klaviyo"]',
       '[class*="privy"]', '[id*="privy"]',
       '[class*="optinmonster"]', '[id*="optinmonster"]',
       '[class*="justuno"]', '[id*="justuno"]',
-      'form[class*="klaviyo"]',
-      // Country/locale selectors
       '[class*="country-selector"]', '[id*="country-selector"]',
-      '[class*="locale-selector"]', '[class*="localization"]',
-      '[class*="country-modal"]', '[id*="CountryModal"]',
-      // Cookie/consent banners
       '[class*="cookie"]', '[id*="cookie"]',
       '[class*="consent"]', '[id*="consent"]',
-      // Generic modal/drawer overlays
       'dialog[open]', '[role="dialog"]',
       '.modal.is-active', '.modal--active', '.modal.active',
       '[class*="drawer"][class*="active"]',
@@ -134,63 +276,71 @@ if (!url || !outputFile) {
     popupSelectors.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
     });
-
-    // 2. Remove fixed-position overlays (popups, modals, drawers, banners)
-    document.querySelectorAll('div, section, aside, form, dialog, details').forEach(el => {
+    // Remove fixed-position overlays
+    document.querySelectorAll('div, section, aside, form, dialog').forEach(el => {
       const style = window.getComputedStyle(el);
       const zIndex = parseInt(style.zIndex) || 0;
       if (style.position === 'fixed' && zIndex > 1) {
-        // Skip nav bars (usually at the top with small height)
         const rect = el.getBoundingClientRect();
         if (rect.height > 200 || zIndex > 100) {
           el.remove(); removed++;
         }
       }
     });
-
-    // 3. Remove generic popup/modal overlays that use fixed positioning
-    document.querySelectorAll('[class*="popup"], [class*="modal-overlay"], [class*="overlay"]').forEach(el => {
-      const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' || style.position === 'absolute') {
-        const rect = el.getBoundingClientRect();
-        // Only remove if it covers most of the viewport (real overlay)
-        if (rect.width > window.innerWidth * 0.5 && rect.height > window.innerHeight * 0.5) {
-          el.remove(); removed++;
-        }
-      }
-    });
-
-    // 4. Restore body scroll and visibility
+    // Restore body
     document.body.style.overflow = 'auto';
     document.body.style.visibility = 'visible';
     document.documentElement.style.overflow = 'auto';
     ['klaviyo-prevent-body-scrolling', 'modal-open', 'popup-open', 'no-scroll', 'overflow-hidden'].forEach(c => {
       document.body.classList.remove(c);
     });
-
     return removed;
   });
-  if (removedCount > 0) {
-    console.log(`Removed ${removedCount} popup/modal/overlay elements from DOM`);
+  if (removedCount > 0) console.log(`Removed ${removedCount} overlay DOM elements`);
+
+  // ── Phase 3: Capture + URL rewrite ────────────────────────────────────────
+  let html = await page.content();
+
+  // Decode HTML entities in src/srcset attributes (&amp; → &)
+  html = html.replace(/srcset="([^"]+)"/g, (match, srcset) => {
+    return `srcset="${srcset.replace(/&amp;/g, '&')}"`;
+  });
+  html = html.replace(/srcset='([^']+)'/g, (match, srcset) => {
+    return `srcset='${srcset.replace(/&amp;/g, '&')}'`;
+  });
+  html = html.replace(/src="([^"]+)"/g, (match, src) => {
+    return `src="${src.replace(/&amp;/g, '&')}"`;
+  });
+  html = html.replace(/src='([^']+)'/g, (match, src) => {
+    return `src='${src.replace(/&amp;/g, '&')}'`;
+  });
+
+  // Rewrite all intercepted URLs to local paths (longest first)
+  const sortedEntries = [...urlMap.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [originalUrl, localPath] of sortedEntries) {
+    // Replace the full URL
+    html = html.split(originalUrl).join(localPath);
+    // Also replace the HTML-encoded version
+    const encoded = originalUrl.replace(/&/g, '&amp;');
+    if (encoded !== originalUrl) {
+      html = html.split(encoded).join(localPath);
+    }
   }
 
-  // ── Final wait for any remaining async renders ────────────────────────────────
-  await page.waitForTimeout(2000);
+  // Write outputs
+  fs.writeFileSync(path.join(jobDir, 'page.html'), html, 'utf8');
+  fs.writeFileSync(path.join(jobDir, 'asset-manifest.json'), JSON.stringify(
+    Object.fromEntries(urlMap), null, 2
+  ), 'utf8');
 
-  const html = await page.content();
-  fs.writeFileSync(outputFile, html, 'utf8');
-
-  // Warn if template vars still present in img attributes
-  const imgTemplateVars = (html.match(/src=["'][^"']*\{\{[^}]+\}\}[^"']*["']/g) || []).length;
-  if (imgTemplateVars > 0) {
-    console.warn(`WARNING: ${imgTemplateVars} img tags still have unresolved template vars in src attribute`);
-  }
-
-  console.log(`Captured: ${html.length} bytes from ${url} (template attempts: ${templateAttempts})`);
+  // Stats
+  const imgVars = (html.match(/src=["'][^"']*\{\{[^}]+\}\}[^"']*["']/g) || []).length;
+  console.log(`Captured: ${html.length} bytes, ${assetCounter} assets intercepted`);
+  if (imgVars > 0) console.warn(`WARNING: ${imgVars} img tags still have unresolved template vars`);
 
   await browser.close();
   process.exit(0);
 })().catch(err => {
-  console.error('Playwright capture error:', err.message);
+  console.error('Capture error:', err.message);
   process.exit(1);
 });

@@ -105,10 +105,9 @@ ${instructions || 'No changes — deploy as exact clone.'}
 IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, write Python scripts using write_file and run them with bash. This avoids token limits.
 
 STEPS:
-1. bash: node /app/playwright-capture.js "${url}" ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
-2. bash: python3 /app/download-assets.py "${jobDir}" "${url}"
-3. bash: python3 /app/structural-transform.py "${jobDir}" && echo "Structural transform OK"
-4. bash: python3 -c "
+1. bash: node /app/playwright-capture.js "${url}" "${jobDir}" && echo "Captured: $(wc -c < ${jobDir}/page.html) bytes, $(ls ${jobDir}/assets/ | wc -l) assets"
+2. bash: python3 /app/structural-transform.py "${jobDir}" "${url}" && echo "Structural transform OK"
+3. bash: python3 -c "
 import re
 with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()
 titles=re.findall(r'<h[1-3][^>]*>([^<]{5,100})</h[1-3]>',h)[:5]
@@ -116,7 +115,7 @@ print('Headlines found:', titles)
 print('Body tag present:', '<body' in h.lower())
 print('Size:', len(h))
 "
-5. ${instructions && instructions.trim() !== 'No changes — deploy as exact clone.' ? `write_file a Python script at ${jobDir}/brand-transform.py that makes the brand changes listed below.
+4. ${instructions && instructions.trim() !== 'No changes — deploy as exact clone.' ? `write_file a Python script at ${jobDir}/brand-transform.py that makes the brand changes listed below.
 
 The script must:
    - Read the ENTIRE ${jobDir}/page.html into a variable called h
@@ -130,11 +129,11 @@ The script must:
    - Print: f"Brand transform done. Size: {len(h)}"
 
 Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK"` : `bash: echo "No brand changes requested — skipping brand transform"`}
-6. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
-7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
-8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --token ${vercelToken})
-9. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
-10. When step 9 says "SSO removed", output: TASK_COMPLETE`;
+5. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
+6. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
+7. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --token ${vercelToken})
+8. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
+9. When step 8 says "SSO removed", output: TASK_COMPLETE`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;

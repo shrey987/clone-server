@@ -11,9 +11,11 @@
   "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",
+    "@ghostery/adblocker-playwright": "^2.14.1",
     "axios": "^1.15.0",
+    "cross-fetch": "^4.1.0",
     "express": "^5.2.1",
-    "playwright": "^1.52.0",
+    "playwright": "^1.59.1",
     "uuid": "^13.0.0"
   }
 }

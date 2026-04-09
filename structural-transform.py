@@ -1,21 +1,21 @@
 """
-structural-transform.py
-Pre-built structural fixes applied to every cloned page BEFORE brand changes.
-Does NOT do any brand changes — only fixes structural/render issues.
+structural-transform.py v2
+Post-capture structural fixes. Assets are already downloaded by playwright-capture.js.
 
 Handles:
-  1. Popup/modal removal (Klaviyo, Privy, generic modals, email capture overlays)
-  2. VSL video gates (height:0, display:none on pricing sections)
-  3. Wistia/video script removal + poster image placeholder
-  4. Lazy-load fix (data-src → src)
-  5. Social proof script 404 silencing
+  1. Selective script removal (popup/tracking/analytics/cart only, keep interactive JS)
+  2. VSL video gates (unhide display:none, height:0, etc.)
+  3. Shopify product JSON fallback (if Replo imgs still have {{}} vars)
+  4. Template var cleanup + UUID text removal
+  5. Lazy-load fix (data-src -> src)
 
-Usage: python3 structural-transform.py <job_dir>
+Usage: python3 structural-transform.py <job_dir> [<base_url>]
 """
 
-import sys, os, re
+import sys, os, re, json, urllib.request
 
 job_dir  = sys.argv[1]
+base_url = sys.argv[2] if len(sys.argv) > 2 else ''
 html_path = os.path.join(job_dir, 'page.html')
 assets_dir = os.path.join(job_dir, 'assets')
 
@@ -24,315 +24,78 @@ with open(html_path, 'r', encoding='utf-8', errors='ignore') as f:
 
 original_len = len(html)
 
-# ── 0. Remove popups, modals, and email capture overlays ─────────────────────
-# These are JS-driven and show on page load — they block the actual content.
-# Remove the scripts that power them, then inject CSS to hide any residual DOM.
+# ── 1. Selective script removal ──────────────────────────────────────────────
+# ONLY remove scripts from known popup/tracking/analytics/cart domains.
+# Keep all other scripts (carousels, accordions, page-builder runtime).
 
-# Remove popup service scripts by src
+REMOVE_SCRIPT_PATTERNS = [
+    # Popup / email capture
+    r'klaviyo', r'privy\.com', r'optinmonster', r'justuno', r'sumo\.com',
+    r'wisepops', r'poptin', r'sleeknote', r'getsitecontrol',
+    # Cookie consent
+    r'cookielaw\.org', r'cookiebot\.com', r'usercentrics\.eu', r'onetrust',
+    # Chat widgets
+    r'intercom', r'drift\.com', r'crisp\.chat', r'zdassets\.com', r'tawk\.to',
+    r'lr-ingest\.io', r'logrocket',
+    # Analytics / tracking
+    r'googletagmanager\.com', r'google-analytics\.com', r'analytics\.google\.com',
+    r'connect\.facebook\.net', r'hotjar\.com', r'heapanalytics',
+    r'segment\.com', r'amplitude\.com', r'plausible\.io', r'usefathom\.com',
+    r'bat\.bing\.com', r'snap\.licdn\.com', r'sc-static\.net', r'sentry\.io',
+    r'meta.*pixel', r'fbevents',
+    # Shopify cart/checkout (404 on static hosting)
+    r'monorail', r'shopify.*checkout', r'web-pixels-manager',
+]
+
+# Build one big regex for script src matching
+script_src_pattern = '|'.join(REMOVE_SCRIPT_PATTERNS)
+
+# Remove script tags whose src matches any pattern
+removed_scripts = 0
+def _remove_script(match):
+    global removed_scripts
+    tag = match.group(0)
+    # Check if src matches
+    src_match = re.search(r'src=["\']([^"\']+)["\']', tag)
+    if src_match:
+        src = src_match.group(1)
+        if re.search(script_src_pattern, src, re.IGNORECASE):
+            removed_scripts += 1
+            return ''
+    return tag
+
+html = re.sub(r'<script[^>]+src=["\'][^"\']+["\'][^>]*>.*?</script>', _remove_script, html, flags=re.DOTALL)
+
+# Remove inline scripts that reference popup/tracking globals
+inline_remove_patterns = [
+    r'_klOnsite', r'klaviyo', r'KlaviyoSubscribe', r'window\.klaviyo',
+    r'Privy\.', r'privy\.',
+    r'OptinMonster', r'om_loaded',
+    r'OneTrust', r'OptanonWrapper', r'CookieBot',
+    r'gtag\s*\(', r'dataLayer\.push', r'fbq\s*\(',
+    r'hotjar', r'hj\s*\(',
+    r'Intercom\s*\(', r'drift\s*\.',
+]
+inline_pattern = '|'.join(inline_remove_patterns)
+
+def _remove_inline_script(match):
+    global removed_scripts
+    content = match.group(0)
+    if re.search(inline_pattern, content, re.IGNORECASE):
+        removed_scripts += 1
+        return ''
+    return content
+
 html = re.sub(
-    r'<script[^>]+src=["\'][^"\']*(?:klaviyo|privy\.com|justuno|optinmonster|sumo\.com|wheelio|poptin|wisepops|sleeknote|mailchimp.*form|popup\.js)[^"\']*["\'][^>]*>.*?</script>',
-    '', html, flags=re.DOTALL | re.IGNORECASE
+    r'<script(?:\s[^>]*)?>(?:(?!</script>).)*</script>',
+    _remove_inline_script, html, flags=re.DOTALL
 )
 
-# Remove inline Klaviyo / popup bootstrap scripts
-html = re.sub(
-    r'<script[^>]*>(?:[^<]|<(?!/script>))*?(?:_klOnsite|klaviyo|KlaviyoSubscribe|window\.klaviyo|privy\.com|OptinMonster|sumo\.com)[^<]*(?:<(?!/script>)[^<]*)*?</script>',
-    '', html, flags=re.DOTALL | re.IGNORECASE
-)
+print(f'Scripts removed: {removed_scripts}')
 
-# Inject CSS to force-hide all popup/modal/overlay elements
-popup_kill_css = '''<style id="clone-popup-kill">
-  /* ── Clone server: popup/modal kill ── */
-  [class*="popup"], [class*="modal"], [class*="overlay"], [class*="lightbox"],
-  [class*="klaviyo"], [class*="privy"], [class*="optin"], [class*="email-capture"],
-  [id*="popup"], [id*="modal"], [id*="overlay"], [id*="lightbox"],
-  [id*="klaviyo"], [id*="privy"],
-  .needsclick, .swipe-overlay, #swipeOverlay, .modal-overlay,
-  .pf-content, .pf-scroll, [class*="pf-"],
-  /* Fixed full-screen covers (common popup pattern) */
-  div[style*="position:fixed"][style*="z-index"],
-  div[style*="position: fixed"][style*="z-index"] {
-    display: none !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-  }
-  /* Klaviyo adds klaviyo-prevent-body-scrolling class to <body> which sets visibility:hidden
-     and hides the ENTIRE page. Force body visible regardless. */
-  body.klaviyo-prevent-body-scrolling,
-  body[class*="klaviyo"],
-  body[class*="prevent-scroll"],
-  body[class*="modal-open"],
-  body[class*="popup-open"],
-  body[style*="overflow: hidden"],
-  body[style*="overflow:hidden"] {
-    visibility: visible !important;
-    overflow: auto !important;
-  }
-  body, html { overflow: auto !important; visibility: visible !important; }
-</style>
-<script id="clone-popup-js-kill">
-// Remove Klaviyo body class immediately and on any DOM mutation
-(function() {
-  var badClasses = ['klaviyo-prevent-body-scrolling','modal-open','popup-open','no-scroll','overflow-hidden'];
-  function cleanBody() {
-    badClasses.forEach(function(c) { document.body && document.body.classList.remove(c); });
-    if (document.body) {
-      document.body.style.setProperty('visibility','visible','important');
-      document.body.style.setProperty('overflow','auto','important');
-    }
-  }
-  document.addEventListener('DOMContentLoaded', cleanBody);
-  window.addEventListener('load', cleanBody);
-  setTimeout(cleanBody, 0);
-  setTimeout(cleanBody, 200);
-  setTimeout(cleanBody, 800);
-  // MutationObserver to catch Klaviyo adding class after load
-  var obs = new MutationObserver(function(muts) {
-    muts.forEach(function(m) {
-      if (m.type === 'attributes' && m.attributeName === 'class') cleanBody();
-    });
-  });
-  document.addEventListener('DOMContentLoaded', function() {
-    if (document.body) obs.observe(document.body, { attributes: true });
-  });
-})();
-</script>'''
-
-if '</head>' in html:
-    html = html.replace('</head>', popup_kill_css + '\n</head>', 1)
-elif '<body' in html:
-    html = html.replace('<body', popup_kill_css + '\n<body', 1)
-
-print(f'Popup removal done. Klaviyo refs remaining: {len(re.findall(r"klaviyo", html, re.I))}')
-
-# ── 0b. Fix Replo / page-builder artifacts ───────────────────────────────────
-# Replo (Shopify page builder) leaves unresolved {{template}} vars in img tags
-# and UUID strings as visible text. Instead of removing these images, replace
-# them IN-PLACE with real product images from Shopify JSON (preserves layout).
-import json as _json3
-
-# Load Shopify product images if available
-shopify_manifest = os.path.join(job_dir, 'shopify-images.json')
-shopify_imgs = []
-if os.path.exists(shopify_manifest):
-    with open(shopify_manifest) as f:
-        shopify_imgs = _json3.load(f)
-
-# Replace broken {{...}} img tags with real product images in-place
-_spimg_idx = [0]  # mutable counter for closure
-def _replace_broken_img(match):
-    if _spimg_idx[0] < len(shopify_imgs):
-        src = shopify_imgs[_spimg_idx[0]]
-        _spimg_idx[0] += 1
-        return f'<img src="{src}" style="width:100%;height:auto;object-fit:contain;display:block;" alt="Product Image" />'
-    return ''  # no more images available, remove the broken tag
-
-broken_img_count = len(re.findall(r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
-    html, flags=re.IGNORECASE))
-
-if shopify_imgs and broken_img_count > 0:
-    html = re.sub(
-        r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
-        _replace_broken_img, html, flags=re.IGNORECASE
-    )
-    print(f'Replo: replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
-elif broken_img_count > 0:
-    # No Shopify images available, just remove broken tags
-    html = re.sub(
-        r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
-        '', html, flags=re.IGNORECASE
-    )
-    print(f'Replo: removed {broken_img_count} broken img tags (no Shopify images available)')
-
-# Remove ANY element whose visible text is a bare UUID (Replo component IDs leak as links/text)
-html = re.sub(
-    r'<(?:a|span|div|p)[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</(?:a|span|div|p)>',
-    '', html, flags=re.IGNORECASE
-)
-# Replace any remaining {{...}} template vars in alt/title attributes with empty string
-html = re.sub(r'((?:alt|title|aria-label)=["\'])[^"\']*\{\{[^}]+\}\}[^"\']*(["\'])', r'\1\2', html, flags=re.IGNORECASE)
-
-template_var_count = len(re.findall(r'\{\{[^}]+\}\}', html))
-if template_var_count > 0:
-    print(f'WARNING: {template_var_count} unresolved {{{{...}}}} template vars remain')
-else:
-    print('Replo/template var cleanup: clean')
-
-# If Shopify images exist but NO broken {{}} images were found (Replo fully resolved or non-Replo),
-# check if there are NO product images visible at all (empty media column), inject gallery as fallback
-if shopify_imgs and broken_img_count == 0:
-    # Check if any shopify-product images are already referenced in the HTML
-    has_shopify_imgs = 'shopify-product-' in html
-    if not has_shopify_imgs:
-        # Build minimal gallery and inject before h1
-        thumbs_html = ''.join(
-            f'<img src="{p}" alt="Product {i+1}" style="width:80px;height:80px;object-fit:cover;cursor:pointer;border:{("2px solid #333" if i == 0 else "1px solid #ddd")};border-radius:4px;" '
-            f'onclick="document.getElementById(\'spg-main\').src=this.src" />\n'
-            for i, p in enumerate(shopify_imgs)
-        )
-        gallery_html = f'''<div id="static-product-gallery" style="width:100%;max-width:600px;padding:0 10px;">
-  <div style="width:100%;margin-bottom:12px;background:#f7f7f7;border-radius:8px;overflow:hidden;">
-    <img id="spg-main" src="{shopify_imgs[0]}" alt="Product" style="width:100%;max-height:600px;object-fit:contain;display:block;" />
-  </div>
-  <div id="spg-thumbs" style="display:flex;gap:8px;flex-wrap:wrap;">{thumbs_html}</div>
-</div>'''
-        h1_match = re.search(r'<h1[^>]*>', html)
-        if h1_match:
-            html = html[:h1_match.start()] + gallery_html + '\n' + html[h1_match.start():]
-            print(f'Shopify gallery fallback injected: {len(shopify_imgs)} images')
-
-        if injected:
-            print(f'Shopify gallery injected: {len(shopify_imgs)} product images')
-        else:
-            print('WARNING: Could not find injection point for Shopify gallery')
-
-# ── 1. Remove Wistia / video player scripts ──────────────────────────────────
-# Remove <script> tags whose src contains video platform keywords
-html = re.sub(
-    r'<script[^>]+src=["\'][^"\']*(?:wistia|fast\.wistia|vidyard|jwplayer|brightcove)[^"\']*["\'][^>]*>.*?</script>',
-    '', html, flags=re.DOTALL | re.IGNORECASE
-)
-# Remove inline <script> blocks that reference wistia internals
-html = re.sub(
-    r'<script[^>]*>(?:[^<]|<(?!/script>))*?(?:wistia|_wq\s*=|wistiaEmbed|Wistia\.api)[^<]*(?:<(?!/script>)[^<]*)*?</script>',
-    '', html, flags=re.DOTALL | re.IGNORECASE
-)
-
-# ── 2. Replace video containers with poster image or placeholder ──────────────
-# Find downloaded poster/thumbnail image — prefer Wistia thumbnail (real video frame)
-# over playscreen overlay (just the play button UI)
-poster_img = None
-if os.path.exists(assets_dir):
-    fnames = os.listdir(assets_dir)
-    # First try: Wistia API thumbnail (real video frame)
-    for fname in fnames:
-        if fname.startswith('wistia-thumb-') and fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-            poster_img = 'assets/' + fname
-            break
-    # Fallback: playscreen/poster images
-    if not poster_img:
-        for fname in fnames:
-            lower = fname.lower()
-            if any(k in lower for k in ('playscreen', 'poster', 'thumbnail', 'video-thumb', 'vidthumb')):
-                if lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
-                    poster_img = 'assets/' + fname
-                    break
-
-video_placeholder = (
-    f'<img src="{poster_img}" style="width:100%;display:block;cursor:pointer;" alt="Video">'
-    if poster_img else
-    '<div style="background:#111;width:100%;aspect-ratio:16/9;display:flex;align-items:center;'
-    'justify-content:center;color:#fff;font-size:32px;font-weight:bold;cursor:pointer;">▶ Watch Video</div>'
-)
-
-# Replace iframes (YouTube, Vimeo, Wistia)
-html = re.sub(
-    r'<iframe[^>]+src=["\'][^"\']*(?:youtube|youtu\.be|vimeo|wistia|vidyard)[^"\']*["\'][^>]*>.*?</iframe>',
-    video_placeholder, html, flags=re.DOTALL | re.IGNORECASE
-)
-
-# Insert poster image into Wistia placeholder containers.
-# Wistia uses #ekran1, #ekran, etc. as mount points that JS fills with the video player.
-# Since we strip Wistia scripts, these are empty. Insert the poster img into each.
-# Pattern: <div id="ekran..."></div>  →  <div id="ekran..."><img src=poster /></div>
-if poster_img:
-    poster_tag = f'<img src="{poster_img}" style="width:100%;display:block;cursor:pointer;" id="video-poster-placeholder" alt="Play Video">'
-    html = re.sub(
-        r'(<div[^>]+id=["\']ekran\w*["\'][^>]*>)(</div>)',
-        lambda m: m.group(1) + poster_tag + m.group(2),
-        html, flags=re.IGNORECASE
-    )
-    print(f'Poster injected into ekran containers: {poster_img}')
-
-# Inject CSS to hide Wistia/video JS-generated DOM overlay elements.
-# When Playwright renders the page, Wistia JS creates a complex DOM tree (wistia_grid_*, w-vulcan-v2,
-# w-ui-container, etc.) that overlays on top of everything, showing as a black box because the
-# blob: video src can't load cross-domain. Hide all of these via injected CSS, leaving the
-# poster img placeholder visible beneath them.
-wistia_css = f'''<style id="clone-video-fix">
-  /* Hide Wistia JS-rendered player overlay — blob: video won't load cross-domain */
-  .wistia_responsive_padding, .wistia_responsive_wrapper,
-  .wistia_embed, [id^="wistia_chrome"], [id^="wistia_grid_"],
-  [id^="w-vulcan"], .w-ui-container, .w-video-wrapper, .w-chrome,
-  video[src^="blob:"], video[src*="fast.wistia"] {{
-    display: none !important;
-    height: 0 !important;
-    overflow: hidden !important;
-  }}
-  /* Unhide Wistia mount points (Wistia JS sets display:none and height:Xpx on these via JS).
-     Also reset position:absolute to relative so the element contributes to parent height.
-     Without this, #video1 collapses to its border height (6px) because all children
-     are absolutely positioned. */
-  [id^="ekran"] {{
-    display: block !important;
-    position: relative !important;
-    height: auto !important;
-    width: 100% !important;
-    overflow: visible !important;
-  }}
-  /* Reset Wistia-collapsed video container heights (Wistia JS sets height:6px inline) */
-  #video1, #video, #video2 {{
-    height: auto !important;
-    overflow: visible !important;
-  }}
-  /* Show poster placeholder and original thumbnail */
-  #video-poster-placeholder, #thumb, img.pulsing {{
-    display: block !important;
-    width: 100% !important;
-    cursor: pointer !important;
-  }}
-  /* Keep loading overlay hidden */
-  #LoadingDiv {{ display: none !important; }}
-</style>'''
-
-# JS fix: page JS runs after load and overrides CSS, re-collapsing #video1 to 6px.
-# Inject a script at end of <body> that uses setProperty('!important') to win back.
-poster_src = poster_img if poster_img else ''
-video_js = f'''<script id="clone-video-js">
-(function() {{
-  function fixVideo() {{
-    ['video1','video','video2'].forEach(function(id) {{
-      var el = document.getElementById(id);
-      if (el) {{
-        el.style.setProperty('height','auto','important');
-        el.style.setProperty('overflow','visible','important');
-      }}
-    }});
-    document.querySelectorAll('[id^="ekran"]').forEach(function(e) {{
-      e.style.setProperty('display','block','important');
-      e.style.setProperty('position','relative','important');
-      e.style.setProperty('height','auto','important');
-      e.style.setProperty('width','100%','important');
-      e.style.setProperty('overflow','visible','important');
-    }});
-    ['video-poster-placeholder','thumb'].forEach(function(id) {{
-      var el = document.getElementById(id);
-      if (el) el.style.setProperty('display','block','important');
-    }});
-  }}
-  window.addEventListener('load', fixVideo);
-  setTimeout(fixVideo, 500);
-  setTimeout(fixVideo, 1500);
-}})();
-</script>'''
-
-if '</head>' in html:
-    html = html.replace('</head>', wistia_css + '\n</head>', 1)
-elif '<body' in html:
-    html = html.replace('<body', wistia_css + '\n<body', 1)
-
-if '</body>' in html:
-    html = html.replace('</body>', video_js + '\n</body>', 1)
-
-# ── 3. Strip VSL video gates ──────────────────────────────────────────────────
-# VSL pages hide pricing/CTA sections until video plays, using either:
-#   - style="height:0; overflow:hidden" on divs/sections
-#   - style="display:none" on main/div/section containers
-# Strip BOTH patterns from ALL block-level elements.
-
+# ── 2. VSL gate removal ─────────────────────────────────────────────────────
 def unhide_element(m):
     tag = m.group(0)
-    # Remove all VSL gate CSS patterns from inline style
     tag = re.sub(r'height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'max-height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'overflow\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
@@ -340,13 +103,9 @@ def unhide_element(m):
     tag = re.sub(r'visibility\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'opacity\s*:\s*0\s*(?:\.\d+)?\s*;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'pointer-events\s*:\s*none\s*;?\s*', '', tag, flags=re.IGNORECASE)
-    tag = re.sub(r'position\s*:\s*absolute\s*;?\s*left\s*:\s*-\d+\w*\s*;?\s*', '', tag, flags=re.IGNORECASE)
-    # Clean up empty style attribute
     tag = re.sub(r'\s*style\s*=\s*["\']["\']', '', tag)
     return tag
 
-# Target opening tags of block elements gated by VSL-style CSS
-# Catches: height:0, display:none, visibility:hidden, opacity:0
 html = re.sub(
     r'<(?:div|section|article|main|aside|header|footer|form)[^>]+style=["\'][^"\']*'
     r'(?:height\s*:\s*0|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)'
@@ -354,35 +113,102 @@ html = re.sub(
     unhide_element, html, flags=re.IGNORECASE
 )
 
-# Remove JS that gates content on video end (look for event handlers referencing display/height toggle)
+# ── 3. Shopify product JSON fallback ─────────────────────────────────────────
+# If broken {{}} img tags remain AND this is a Shopify product page, fetch
+# real product images from /products/{handle}.json and replace in-place.
+broken_img_count = len(re.findall(r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}', html, re.IGNORECASE))
+
+if broken_img_count > 0 and '/products/' in base_url:
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        path_parts = parsed.path.strip('/').split('/')
+        prod_idx = path_parts.index('products')
+        handle = path_parts[prod_idx + 1].split('?')[0].split('#')[0]
+        product_json_url = f'{origin}/products/{handle}.json'
+        print(f'Fetching Shopify product JSON: {product_json_url}')
+
+        req = urllib.request.Request(product_json_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            pdata = json.loads(resp.read())
+
+        images = pdata.get('product', {}).get('images', [])
+        shopify_imgs = []
+        for i, img in enumerate(images):
+            img_src = img.get('src', '')
+            if not img_src:
+                continue
+            fname = f'shopify-product-{i}.jpg'
+            local = os.path.join(assets_dir, fname)
+            try:
+                req2 = urllib.request.Request(img_src, headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+                })
+                with urllib.request.urlopen(req2, timeout=20) as resp2:
+                    with open(local, 'wb') as f:
+                        f.write(resp2.read())
+                shopify_imgs.append(f'assets/{fname}')
+            except Exception as e:
+                print(f'Shopify img SKIP {i}: {e}')
+
+        # Replace broken {{}} imgs in-place with real product images
+        _idx = [0]
+        def _replace_broken(match):
+            if _idx[0] < len(shopify_imgs):
+                src = shopify_imgs[_idx[0]]
+                _idx[0] += 1
+                return f'<img src="{src}" style="width:100%;height:auto;object-fit:contain;display:block;" alt="Product" />'
+            return ''
+
+        if shopify_imgs:
+            html = re.sub(
+                r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+                _replace_broken, html, flags=re.IGNORECASE
+            )
+            print(f'Replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
+    except Exception as e:
+        print(f'Shopify product JSON fallback failed: {e}')
+
+# ── 4. Template var + UUID cleanup ───────────────────────────────────────────
+# Remove any remaining broken {{}} img tags
+html = re.sub(r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+    '', html, flags=re.IGNORECASE)
+# Clean {{}} from alt/title attributes
+html = re.sub(r'((?:alt|title|aria-label)=["\'])[^"\']*\{\{[^}]+\}\}[^"\']*(["\'])',
+    r'\1\2', html, flags=re.IGNORECASE)
+# Remove visible UUID text nodes
 html = re.sub(
-    r'<script[^>]*>(?:[^<]|<(?!/script>))*?(?:video_ended|videoEnded|onended|wistia.*?play)[^<]*(?:<(?!/script>)[^<]*)*?</script>',
-    '', html, flags=re.DOTALL | re.IGNORECASE
+    r'<(?:a|span|div|p)[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</(?:a|span|div|p)>',
+    '', html, flags=re.IGNORECASE
 )
 
-# ── 4. Fix lazy-loaded images (data-src → src) ────────────────────────────────
+remaining_vars = len(re.findall(r'\{\{[^}]+\}\}', html))
+if remaining_vars > 0:
+    print(f'WARNING: {remaining_vars} unresolved template vars remain')
+else:
+    print('Template/UUID cleanup: clean')
+
+# ── 5. Lazy-load fix ────────────────────────────────────────────────────────
 def fix_lazy(m):
     tag = m.group(0)
     dsrc = re.search(r'data-src=["\']([^"\']+)["\']', tag)
     if not dsrc:
         return tag
     real = dsrc.group(1)
-    # Only fix if src is empty or placeholder
-    if re.search(r'\bsrc=["\'](?:data:image/gif[^"\']*|)["\']', tag):
-        tag = re.sub(r'\bsrc=["\'][^"\']*["\']', f'src="{real}"', tag)
+    tag = re.sub(r'\bsrc=["\']["\']', f'src="{real}"', tag)
     return tag
 
 html = re.sub(r'<img[^>]+>', fix_lazy, html)
 
-# ── 5. Safety check ───────────────────────────────────────────────────────────
-new_len = len(html)
-ratio = new_len / original_len if original_len > 0 else 0
-print(f'Size check: {new_len:,} / {original_len:,} = {ratio:.2f}')
-if ratio < 0.6:
-    print(f'ERROR: output too small ({ratio:.2f}). Aborting to prevent corruption.')
+# ── Safety check ─────────────────────────────────────────────────────────────
+if len(html) < original_len * 0.4:
+    print(f'ABORT: Output ({len(html)}) is less than 40% of input ({original_len})')
     sys.exit(1)
 
 with open(html_path, 'w', encoding='utf-8') as f:
     f.write(html)
 
-print(f'Structural transform done. Body tag present: {"<body" in html.lower()}')
+print(f'Structural transform done. {original_len} -> {len(html)} bytes ({len(html)/original_len:.0%})')
