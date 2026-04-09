@@ -213,27 +213,41 @@ html = re.sub(r'<img[^>]+>', fix_lazy, html)
 # image to stay at thumbnail size. Inject CSS to force the first carousel slide
 # to display as a large image if we detect a Replo/Shopify carousel.
 gallery_fix_css = '''<style id="clone-gallery-fix">
-/* Force first carousel slide to display as large hero image */
-[class*="carousel"] [aria-label*="Slide 1"],
-[class*="slider"] [aria-label*="Slide 1"],
-[data-slide-index="0"],
-[class*="product__media"] img:first-of-type,
-[class*="product-gallery"] img:first-of-type {
+/* Fix collapsed carousel containers — force visible with proper dimensions */
+.slider-container, .swiper-container, .carousel-container,
+[class*="slider-container"], [class*="swiper-container"] {
   width: 100% !important;
-  max-width: 600px !important;
   height: auto !important;
-  object-fit: contain !important;
+  min-height: 400px !important;
+  overflow: visible !important;
+  position: relative !important;
+}
+.slider-wrapper, .swiper-wrapper, .carousel-wrapper,
+[class*="slider-wrapper"], [class*="swiper-wrapper"] {
+  display: flex !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 400px !important;
+}
+/* Show first slide at full size, hide others */
+.slider-wrapper > *:first-child,
+.swiper-wrapper > *:first-child,
+[class*="slider-wrapper"] > *:first-child {
+  flex: 0 0 100% !important;
+  width: 100% !important;
   display: block !important;
 }
-/* Ensure product media container has proper width */
-[class*="product__media"],
-[class*="product-media"],
-[class*="product-gallery"],
-[class*="media-gallery"] {
-  min-width: 50% !important;
-  width: 50% !important;
+.slider-wrapper > *:not(:first-child),
+.swiper-wrapper > *:not(:first-child) {
+  display: none !important;
 }
-/* Remove meta/link redirect tags */
+/* Force images inside carousel to display properly */
+.slider-container img, .swiper-container img,
+[class*="slider-container"] img {
+  max-width: 100% !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
 </style>'''
 
 if '</head>' in html:
