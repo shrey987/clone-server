@@ -137,7 +137,7 @@ After deploying, output the final URL on its own line as: DEPLOYED_URL=https://.
     // Check for DEPLOYED_URL in text blocks
     for (const block of response.content) {
       if (block.type === 'text') {
-        const match = block.text.match(/DEPLOYED_URL=(https:\/\/[^\s\n]+)/);
+        const match = block.text.match(/DEPLOYED_URL=(https:\/\/[a-zA-Z0-9\-\.]+\.vercel\.app)/);
         if (match) {
           deployedUrl = match[1].trim();
           console.log(`[Agent] Got URL: ${deployedUrl}`);
