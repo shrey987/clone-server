@@ -111,23 +111,40 @@ if (!url || !outputFile) {
   const removedCount = await page.evaluate(() => {
     let removed = 0;
 
-    // 1. Remove Klaviyo and other popup service elements by class/id
+    // 1. Remove popup services, country selectors, cookie banners, and modal elements
     const popupSelectors = [
       '[class*="klaviyo"]', '[id*="klaviyo"]',
       '[class*="privy"]', '[id*="privy"]',
       '[class*="optinmonster"]', '[id*="optinmonster"]',
       '[class*="justuno"]', '[id*="justuno"]',
       'form[class*="klaviyo"]',
+      // Country/locale selectors
+      '[class*="country-selector"]', '[id*="country-selector"]',
+      '[class*="locale-selector"]', '[class*="localization"]',
+      '[class*="country-modal"]', '[id*="CountryModal"]',
+      // Cookie/consent banners
+      '[class*="cookie"]', '[id*="cookie"]',
+      '[class*="consent"]', '[id*="consent"]',
+      // Generic modal/drawer overlays
+      'dialog[open]', '[role="dialog"]',
+      '.modal.is-active', '.modal--active', '.modal.active',
+      '[class*="drawer"][class*="active"]',
+      '[class*="drawer"][class*="open"]',
     ];
     popupSelectors.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
     });
 
-    // 2. Remove fixed-position overlays with high z-index (popup wrappers)
-    document.querySelectorAll('div, section, aside, form').forEach(el => {
+    // 2. Remove fixed-position overlays (popups, modals, drawers, banners)
+    document.querySelectorAll('div, section, aside, form, dialog, details').forEach(el => {
       const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' && parseInt(style.zIndex) > 999) {
-        el.remove(); removed++;
+      const zIndex = parseInt(style.zIndex) || 0;
+      if (style.position === 'fixed' && zIndex > 1) {
+        // Skip nav bars (usually at the top with small height)
+        const rect = el.getBoundingClientRect();
+        if (rect.height > 200 || zIndex > 100) {
+          el.remove(); removed++;
+        }
       }
     });
 
