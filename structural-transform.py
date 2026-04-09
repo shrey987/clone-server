@@ -272,6 +272,27 @@ gallery_fix_css = '''<style id="clone-gallery-fix">
   width: 100% !important;
   overflow: hidden !important;
 }
+/* Force hero fallback image to display regardless of parent constraints */
+#clone-hero-fallback {
+  width: 100% !important;
+  max-width: 600px !important;
+  display: block !important;
+  position: relative !important;
+  z-index: 10 !important;
+}
+#clone-hero-fallback img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+}
+/* Replo parent containers that collapse content */
+[data-rid] {
+  min-width: 0 !important;
+}
+/* When hero fallback exists, hide the broken Replo carousel that follows it */
+#clone-hero-fallback + [data-replo-component-root="carousel"] {
+  display: none !important;
+}
 </style>'''
 
 if '</head>' in html:
