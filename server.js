@@ -203,6 +203,152 @@ Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK
   return deployedUrl;
 }
 
+// ── Edit Agent: applies intelligent brand changes to an existing clone ────────
+async function runEditAgent(jobDir, cloneUrl, projectName, description, vercelToken, jobId) {
+  const tools = [
+    {
+      name: 'bash',
+      description: 'Run a bash command. Use for curl, cp, mkdir, vercel deploy, python3, etc.',
+      input_schema: {
+        type: 'object',
+        properties: { command: { type: 'string', description: 'The bash command to run' } },
+        required: ['command']
+      }
+    },
+    {
+      name: 'read_file',
+      description: 'Read a file from disk. Returns first 8KB of content.',
+      input_schema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Absolute file path' } },
+        required: ['path']
+      }
+    },
+    {
+      name: 'write_file',
+      description: 'Write content to a file on disk.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute file path' },
+          content: { type: 'string', description: 'File content to write' }
+        },
+        required: ['path', 'content']
+      }
+    }
+  ];
+
+  const systemPrompt = `You are a landing page brand editor agent. You have access to bash, read_file, and write_file tools. Complete the task fully — do not stop until you have a deployed Vercel URL.
+
+Job directory: ${jobDir}
+Vercel token: ${vercelToken}
+Vercel scope: grrow
+Target Vercel project: ${projectName}
+
+CRITICAL RULES:
+- NEVER run the "claude" command in bash. Never. Not for any reason.
+- Use ONLY these tools: bash (for curl, cp, mkdir, python3, vercel), read_file, write_file
+- The HTML is already at ${jobDir}/page.html (fetched from the existing clone)
+- Uploaded files are at ${jobDir}/uploads/ — use them for asset replacements`;
+
+  const userMessage = `Apply intelligent brand changes to this cloned landing page and redeploy it.
+
+Clone URL: ${cloneUrl}
+Target Vercel project: ${projectName}
+Job dir: ${jobDir}
+
+USER'S BRAND/PRODUCT DESCRIPTION:
+${description || 'No description provided — keep existing content, just redeploy.'}
+
+IMPORTANT: The HTML at ${jobDir}/page.html is already a static clone with local asset paths (assets/...). Do NOT re-download anything. Just edit the HTML and redeploy.
+
+STEPS:
+1. bash: python3 -c "
+import re
+with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()
+titles=re.findall(r'<h[1-3][^>]*>([^<]{5,120})</h[1-3]>',h)[:8]
+ctabtns=re.findall(r'<(?:a|button)[^>]*>([^<]{3,60})</(?:a|button)>',h)[:6]
+print('Headlines:', titles)
+print('CTAs:', ctabtns)
+print('Size:', len(h))
+"
+2. bash: ls -la ${jobDir}/uploads/ 2>/dev/null || echo "No uploads"
+3. Based on the page headlines + user's description + uploaded file names, write_file ${jobDir}/brand-transform.py that:
+   - Reads the ENTIRE ${jobDir}/page.html
+   - Makes INTELLIGENT brand substitutions:
+     * Find the original brand/product name (appears repeatedly in headlines) — replace with user's product name throughout
+     * Replace headline copy with user's equivalent messaging
+     * Replace benefit bullet text with user's benefits
+     * Replace CTA button text with user's CTA
+     * For uploaded IMAGE files (.jpg/.jpeg/.png/.webp/.gif/.svg in uploads/):
+       - Use filename as hint: logo.png → find logo img src and replace, hero.jpg → find hero/main img src and replace
+       - Replace matching img src attributes with uploads/FILENAME
+     * For uploaded VIDEO files (.mp4/.mov/.webm in uploads/):
+       - Find the video placeholder: id="video-poster-placeholder" img tag or id="video1" container
+       - Replace with: <video controls style="width:100%;display:block;" playsinline><source src="uploads/FILENAME" type="video/mp4"></video>
+     * If user specified a hex color, find the dominant brand color in inline styles/CSS and replace it
+   - Use str.replace() and re.sub() ONLY — no restructuring, no removing tags
+   - Write complete modified HTML back: open('${jobDir}/page.html','w').write(h)
+   - Print: f"Edit transform done. Size: {len(h)}"
+4. bash: python3 ${jobDir}/brand-transform.py && echo "Edit transform OK"
+5. bash: mkdir -p ${jobDir}/${projectName} && cp ${jobDir}/page.html ${jobDir}/${projectName}/index.html && cp -r ${jobDir}/assets ${jobDir}/${projectName}/assets 2>/dev/null || true && cp -r ${jobDir}/uploads ${jobDir}/${projectName}/uploads 2>/dev/null || true && echo "Files copied"
+6. write_file: ${jobDir}/${projectName}/vercel.json with content: {"version":2}
+7. bash: cd ${jobDir}/${projectName} && vercel deploy --prod --yes --scope grrow --name ${projectName} --token ${vercelToken}
+8. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/${projectName}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
+9. When step 8 says "SSO removed", output: TASK_COMPLETE`;
+
+  const messages = [{ role: 'user', content: userMessage }];
+  let iterations = 0;
+  const maxIterations = 25;
+
+  while (iterations < maxIterations) {
+    iterations++;
+    console.log(`[Edit Agent] Iteration ${iterations}`);
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 4096,
+      system: systemPrompt,
+      tools,
+      messages
+    });
+
+    messages.push({ role: 'assistant', content: response.content });
+
+    for (const block of response.content) {
+      if (block.type === 'text' && block.text.includes('TASK_COMPLETE')) {
+        console.log(`[Edit Agent] Task complete signal received`);
+      }
+    }
+
+    if (response.stop_reason === 'end_turn') break;
+
+    if (response.stop_reason === 'tool_use') {
+      const toolResults = [];
+      for (const block of response.content) {
+        if (block.type === 'tool_use') {
+          console.log(`[Edit Agent] Tool: ${block.name} | input: ${JSON.stringify(block.input).slice(0, 200)}`);
+          let result;
+          if (block.name === 'bash') result = runBash(block.input.command);
+          else if (block.name === 'read_file') result = readFile(block.input.path);
+          else if (block.name === 'write_file') result = writeFile(block.input.path, block.input.content);
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) });
+        }
+      }
+      if (toolResults.length > 0) messages.push({ role: 'user', content: toolResults });
+    }
+  }
+
+  // URL is deterministic — same project name = same URL, just updated content
+  const projectUrl = `https://${projectName}.vercel.app`;
+  const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
+  if (check && check.status < 400) {
+    console.log(`[Edit Agent] Verified URL: ${projectUrl}`);
+    return projectUrl;
+  }
+  return null;
+}
+
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
 app.post('/clone', async (req, res) => {
@@ -236,6 +382,55 @@ app.post('/clone', async (req, res) => {
 
   } catch (err) {
     console.error(`[${jobId}] Error:`, err.message);
+    res.status(500).json({ error: err.message, jobId });
+  }
+});
+
+app.post('/edit', async (req, res) => {
+  const { cloneUrl, description, uploads = [] } = req.body;
+  if (!cloneUrl) return res.status(400).json({ error: 'cloneUrl required' });
+
+  // Must be a clone-XXXXXXXX.vercel.app URL
+  const projectMatch = cloneUrl.match(/https?:\/\/(clone-[a-f0-9]+)\.vercel\.app/);
+  if (!projectMatch) return res.status(400).json({ error: 'cloneUrl must be a clone-XXXXXXXX.vercel.app URL' });
+  const projectName = projectMatch[1];
+
+  const jobId = uuidv4();
+  const jobDir = `/tmp/edit-${jobId}`;
+  const uploadsDir = `${jobDir}/uploads`;
+
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(`${jobDir}/assets`, { recursive: true });
+
+  console.log(`[${jobId}] Starting edit: ${cloneUrl} → project: ${projectName}`);
+
+  try {
+    // Save uploaded files
+    for (const upload of uploads) {
+      const buf = Buffer.from(upload.base64, 'base64');
+      fs.writeFileSync(`${uploadsDir}/${upload.name}`, buf);
+      console.log(`[${jobId}] Saved upload: ${upload.name} (${buf.length} bytes)`);
+    }
+
+    // Fetch current HTML from the existing Vercel clone
+    const htmlResp = await fetch(cloneUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
+    });
+    if (!htmlResp.ok) throw new Error(`Failed to fetch clone HTML: HTTP ${htmlResp.status}`);
+    const html = await htmlResp.text();
+    if (html.length < 1000) throw new Error(`Fetched HTML too small (${html.length} bytes) — clone URL may be invalid`);
+    fs.writeFileSync(`${jobDir}/page.html`, html, 'utf8');
+    console.log(`[${jobId}] Fetched HTML: ${html.length} bytes`);
+
+    const vercelToken = process.env.VERCEL_TOKEN;
+    const deployedUrl = await runEditAgent(jobDir, cloneUrl, projectName, description, vercelToken, jobId);
+
+    if (!deployedUrl) throw new Error('Edit agent completed but URL verification failed');
+    console.log(`[${jobId}] Edit done: ${deployedUrl}`);
+    res.json({ url: deployedUrl, jobId });
+
+  } catch (err) {
+    console.error(`[${jobId}] Edit error:`, err.message);
     res.status(500).json({ error: err.message, jobId });
   }
 });
