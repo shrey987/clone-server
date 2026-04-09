@@ -87,10 +87,15 @@ wistia_css = f'''<style id="clone-video-fix">
     height: 0 !important;
     overflow: hidden !important;
   }}
-  /* Unhide Wistia mount points (Wistia JS sets display:none and height:Xpx on these via JS) */
+  /* Unhide Wistia mount points (Wistia JS sets display:none and height:Xpx on these via JS).
+     Also reset position:absolute to relative so the element contributes to parent height.
+     Without this, #video1 collapses to its border height (6px) because all children
+     are absolutely positioned. */
   [id^="ekran"] {{
     display: block !important;
+    position: relative !important;
     height: auto !important;
+    width: 100% !important;
     overflow: visible !important;
   }}
   /* Reset Wistia-collapsed video container heights (Wistia JS sets height:6px inline) */
@@ -123,7 +128,9 @@ video_js = f'''<script id="clone-video-js">
     }});
     document.querySelectorAll('[id^="ekran"]').forEach(function(e) {{
       e.style.setProperty('display','block','important');
+      e.style.setProperty('position','relative','important');
       e.style.setProperty('height','auto','important');
+      e.style.setProperty('width','100%','important');
       e.style.setProperty('overflow','visible','important');
     }});
     ['video-poster-placeholder','thumb'].forEach(function(id) {{
