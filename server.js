@@ -116,6 +116,8 @@ print('Headlines found:', titles)
 "
 4. write_file a Python script at ${jobDir}/transform.py that makes ALL the requested brand changes. The script should:
    - Read ${jobDir}/page.html
+   - CRITICAL — Strip VSL video gates: many pages hide pricing/CTA sections until a video plays. Find elements with style="height:0" or style="height: 0" or style containing "overflow:hidden;height:0" or style="display:none" and remove those hiding styles so all content is visible. Also remove any JS that adds/removes classes to reveal content on video end (look for videoEnded, video_ended, onended handlers that toggle visibility).
+   - CRITICAL — Fix broken video embeds: replace <iframe> video embeds (YouTube, Vimeo, Wistia, etc.) with a simple placeholder div: <div style="background:#000;width:100%;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px;">▶ Video</div>
    - Make text/copy changes using string replacement or regex
    - For uploaded assets in ${jobDir}/uploads/, replace matching src/url references
    - Fix lazy-loaded images (src="" → src=data-src value)
