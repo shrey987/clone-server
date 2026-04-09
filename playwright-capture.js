@@ -95,6 +95,57 @@ if (!url || !outputFile) {
     console.log(`Template var resolution: ${stillHas ? 'STILL HAS unresolved vars after ' + templateAttempts + ' attempts' : 'RESOLVED'}`);
   }
 
+  // ── Remove popups, modals, and overlays from DOM BEFORE capture ────────────
+  // CSS can't beat inline !important styles. Remove elements entirely from DOM.
+  const removedCount = await page.evaluate(() => {
+    let removed = 0;
+
+    // 1. Remove Klaviyo and other popup service elements by class/id
+    const popupSelectors = [
+      '[class*="klaviyo"]', '[id*="klaviyo"]',
+      '[class*="privy"]', '[id*="privy"]',
+      '[class*="optinmonster"]', '[id*="optinmonster"]',
+      '[class*="justuno"]', '[id*="justuno"]',
+      'form[class*="klaviyo"]',
+    ];
+    popupSelectors.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
+    });
+
+    // 2. Remove fixed-position overlays with high z-index (popup wrappers)
+    document.querySelectorAll('div, section, aside, form').forEach(el => {
+      const style = window.getComputedStyle(el);
+      if (style.position === 'fixed' && parseInt(style.zIndex) > 999) {
+        el.remove(); removed++;
+      }
+    });
+
+    // 3. Remove generic popup/modal overlays that use fixed positioning
+    document.querySelectorAll('[class*="popup"], [class*="modal-overlay"], [class*="overlay"]').forEach(el => {
+      const style = window.getComputedStyle(el);
+      if (style.position === 'fixed' || style.position === 'absolute') {
+        const rect = el.getBoundingClientRect();
+        // Only remove if it covers most of the viewport (real overlay)
+        if (rect.width > window.innerWidth * 0.5 && rect.height > window.innerHeight * 0.5) {
+          el.remove(); removed++;
+        }
+      }
+    });
+
+    // 4. Restore body scroll and visibility
+    document.body.style.overflow = 'auto';
+    document.body.style.visibility = 'visible';
+    document.documentElement.style.overflow = 'auto';
+    ['klaviyo-prevent-body-scrolling', 'modal-open', 'popup-open', 'no-scroll', 'overflow-hidden'].forEach(c => {
+      document.body.classList.remove(c);
+    });
+
+    return removed;
+  });
+  if (removedCount > 0) {
+    console.log(`Removed ${removedCount} popup/modal/overlay elements from DOM`);
+  }
+
   // ── Final wait for any remaining async renders ────────────────────────────────
   await page.waitForTimeout(2000);
 
