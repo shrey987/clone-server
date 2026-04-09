@@ -177,17 +177,44 @@ if '/products/' in base_url:
             )
             print(f'Replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
 
-        # For Replo carousels that collapsed: inject a static hero image before the carousel
+        # For Replo carousels that collapsed: replace the carousel entirely with static images
         if shopify_imgs and has_replo_carousel:
-            hero_src = shopify_imgs[0]
-            hero_html = f'''<div id="clone-hero-fallback" style="width:100%;max-width:600px;margin-bottom:16px;">
-  <img src="{hero_src}" alt="Product" style="width:100%;height:auto;object-fit:contain;display:block;border-radius:8px;" />
+            # Build a clean static product gallery
+            thumbs = ''
+            for i, src in enumerate(shopify_imgs[:8]):
+                border = '2px solid #333' if i == 0 else '1px solid #ddd'
+                thumbs += f'<img src="{src}" alt="Product {i+1}" style="width:70px;height:70px;object-fit:cover;cursor:pointer;border:{border};border-radius:4px;flex-shrink:0;" onclick="document.getElementById(\'clone-hero-img\').src=this.src;document.querySelectorAll(\'#clone-hero-thumbs img\').forEach(i=>i.style.borderColor=\'#ddd\');this.style.borderColor=\'#333\'" />\n'
+
+            gallery_html = f'''<div id="clone-hero-gallery" style="width:100%;max-width:600px;">
+  <img id="clone-hero-img" src="{shopify_imgs[0]}" alt="Product" style="width:100%;height:auto;max-height:600px;object-fit:contain;display:block;border-radius:8px;background:#f5f5f5;margin-bottom:12px;" />
+  <div id="clone-hero-thumbs" style="display:flex;gap:8px;overflow-x:auto;">{thumbs}</div>
 </div>'''
-            # Inject before the first Replo carousel
-            carousel_match = re.search(r'<div[^>]*data-replo-component-root="carousel"', html)
+
+            # Find and REPLACE the first Replo carousel container (the broken one)
+            # Strategy: find the outermost data-rid parent that contains the carousel
+            carousel_match = re.search(
+                r'(<div[^>]*data-replo-component-root="carousel"[^>]*>)',
+                html
+            )
             if carousel_match:
-                html = html[:carousel_match.start()] + hero_html + '\n' + html[carousel_match.start():]
-                print(f'Injected static hero image before Replo carousel')
+                # Find the start of the grandparent data-rid div
+                # Work backwards from carousel to find the enclosing container
+                search_start = max(0, carousel_match.start() - 2000)
+                pre_context = html[search_start:carousel_match.start()]
+
+                # Find the outermost <div data-rid=... that leads to this carousel
+                parent_opens = list(re.finditer(r'<div[^>]*data-rid="[^"]*"[^>]*>', pre_context))
+                if parent_opens:
+                    # Use the most recent data-rid parent
+                    parent_start = search_start + parent_opens[-1].start()
+                    # Now find the matching closing </div> for the entire carousel section
+                    # Simple approach: just inject before and hide carousel with CSS
+                    html = html[:parent_start] + gallery_html + '\n' + html[parent_start:]
+                    print(f'Injected static gallery ({len(shopify_imgs)} images) before Replo carousel')
+                else:
+                    # Fallback: inject before carousel directly
+                    html = html[:carousel_match.start()] + gallery_html + '\n' + html[carousel_match.start():]
+                    print(f'Injected static gallery before Replo carousel (no parent found)')
     except Exception as e:
         print(f'Shopify product image injection failed: {e}')
 
@@ -272,26 +299,18 @@ gallery_fix_css = '''<style id="clone-gallery-fix">
   width: 100% !important;
   overflow: hidden !important;
 }
-/* Force hero fallback image to display regardless of parent constraints */
-#clone-hero-fallback {
+/* Static gallery replaces broken Replo carousel */
+#clone-hero-gallery {
+  display: block !important;
   width: 100% !important;
   max-width: 600px !important;
-  display: block !important;
-  position: relative !important;
-  z-index: 10 !important;
 }
-#clone-hero-fallback img {
-  width: 100% !important;
-  height: auto !important;
-  display: block !important;
-}
-/* Replo parent containers that collapse content */
-[data-rid] {
-  min-width: 0 !important;
-}
-/* When hero fallback exists, hide the broken Replo carousel that follows it */
-#clone-hero-fallback + [data-replo-component-root="carousel"] {
+/* When static gallery is injected, hide the broken Replo carousel after it */
+#clone-hero-gallery ~ [data-replo-component-root="carousel"],
+#clone-hero-gallery ~ div [data-replo-component-root="carousel"] {
   display: none !important;
+  height: 0 !important;
+  overflow: hidden !important;
 }
 </style>'''
 
