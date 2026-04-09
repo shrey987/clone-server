@@ -169,18 +169,25 @@ if '</body>' in html:
 
 def unhide_element(m):
     tag = m.group(0)
-    # Remove height:0, max-height:0, overflow:hidden, display:none from inline style
+    # Remove all VSL gate CSS patterns from inline style
     tag = re.sub(r'height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
-    tag = re.sub(r'overflow\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'max-height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'overflow\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'display\s*:\s*none\s*;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'visibility\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'opacity\s*:\s*0\s*(?:\.\d+)?\s*;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'pointer-events\s*:\s*none\s*;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'position\s*:\s*absolute\s*;?\s*left\s*:\s*-\d+\w*\s*;?\s*', '', tag, flags=re.IGNORECASE)
     # Clean up empty style attribute
     tag = re.sub(r'\s*style\s*=\s*["\']["\']', '', tag)
     return tag
 
-# Target opening tags of block elements that have height:0 OR display:none in their style
+# Target opening tags of block elements gated by VSL-style CSS
+# Catches: height:0, display:none, visibility:hidden, opacity:0
 html = re.sub(
-    r'<(?:div|section|article|main|aside|header|footer)[^>]+style=["\'][^"\']*(?:height\s*:\s*0|display\s*:\s*none)[^"\']*["\'][^>]*>',
+    r'<(?:div|section|article|main|aside|header|footer|form)[^>]+style=["\'][^"\']*'
+    r'(?:height\s*:\s*0|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)'
+    r'[^"\']*["\'][^>]*>',
     unhide_element, html, flags=re.IGNORECASE
 )
 

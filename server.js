@@ -116,20 +116,23 @@ print('Headlines found:', titles)
 print('Body tag present:', '<body' in h.lower())
 print('Size:', len(h))
 "
-5. ${instructions && instructions.trim() !== 'No changes — deploy as exact clone.' ? `write_file a Python script at ${jobDir}/brand-transform.py that makes ONLY the brand changes listed below. Keep it simple — use only str.replace() and re.sub() for text substitution. Do NOT restructure or rewrite any HTML. Do NOT remove any tags. Do NOT touch video, scripts, or style blocks. ONLY change the specific text, colors, images, or copy requested.
+5. ${instructions && instructions.trim() !== 'No changes — deploy as exact clone.' ? `write_file a Python script at ${jobDir}/brand-transform.py that makes the brand changes listed below.
 
 The script must:
-   - Read the ENTIRE ${jobDir}/page.html into a variable
-   - Make ONLY these changes using simple string replacement:
+   - Read the ENTIRE ${jobDir}/page.html into a variable called h
+   - Make ONLY these targeted changes using str.replace() and re.sub():
      ${instructions}
    - For uploaded assets in ${jobDir}/uploads/, replace matching image src references with uploads/FILENAME
-   - CRITICAL: Write the COMPLETE modified HTML back (must contain both <head> and <body>). Use: open('${jobDir}/page.html','w').write(html)
-   - Print file size at end: print(f"Brand transform done. Size: {len(html)}")
+   - GLOBAL SWEEP (run after all targeted changes): detect the original product/brand name from h1/h2 headlines (the name that appears most) and replace EVERY occurrence: h = h.replace(original_name, new_name) — this catches testimonials, FAQ, body copy
+   - For uploaded videos (.mp4/.mov/.webm): find id="video-poster-placeholder" and replace with <video controls style="width:100%;display:block;" playsinline><source src="uploads/FILENAME" type="video/mp4"></video>
+   - Size check: if len(h) < original_len * 0.6: raise Exception("Output too small")
+   - CRITICAL: Write the COMPLETE modified HTML back. Use: open('${jobDir}/page.html','w').write(h)
+   - Print: f"Brand transform done. Size: {len(h)}"
 
 Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK"` : `bash: echo "No brand changes requested — skipping brand transform"`}
 6. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
 7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
-8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
+8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --token ${vercelToken})
 9. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
 10. When step 9 says "SSO removed", output: TASK_COMPLETE`;
 
@@ -287,13 +290,22 @@ print('Size:', len(h))
        - Find the video placeholder: id="video-poster-placeholder" img tag or id="video1" container
        - Replace with: <video controls style="width:100%;display:block;" playsinline><source src="uploads/FILENAME" type="video/mp4"></video>
      * If user specified a hex color, find the dominant brand color in inline styles/CSS and replace it
-   - Use str.replace() and re.sub() ONLY — no restructuring, no removing tags
+   - GLOBAL BRAND SWEEP — run this LAST, after all targeted replacements:
+     * From the page headlines you extracted in step 1, identify the original product/brand name (most-repeated proper noun)
+     * Also identify the parent company name if different from the product name
+     * Replace EVERY occurrence throughout the entire HTML (catches testimonials, FAQ, guarantee, body copy):
+       original_brand = 'K9 Soothe'  # replace with what you detected
+       h = h.replace(original_brand, user_product_name)
+       h = h.replace(original_brand.lower(), user_product_name.lower())
+       # Repeat for parent company name if found
+     * Use the user's product name from their description. If no product name given, skip the sweep.
+   - Size safety check: if len(h) < original_size * 0.6: raise Exception("Output too small, aborting")
    - Write complete modified HTML back: open('${jobDir}/page.html','w').write(h)
    - Print: f"Edit transform done. Size: {len(h)}"
 4. bash: python3 ${jobDir}/brand-transform.py && echo "Edit transform OK"
 5. bash: mkdir -p ${jobDir}/${projectName} && cp ${jobDir}/page.html ${jobDir}/${projectName}/index.html && cp -r ${jobDir}/assets ${jobDir}/${projectName}/assets 2>/dev/null || true && cp -r ${jobDir}/uploads ${jobDir}/${projectName}/uploads 2>/dev/null || true && echo "Files copied"
 6. write_file: ${jobDir}/${projectName}/vercel.json with content: {"version":2}
-7. bash: cd ${jobDir}/${projectName} && vercel deploy --prod --yes --scope grrow --name ${projectName} --token ${vercelToken}
+7. bash: cd ${jobDir}/${projectName} && vercel deploy --prod --yes --scope grrow --name ${projectName} --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --name ${projectName} --token ${vercelToken})
 8. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/${projectName}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
 9. When step 8 says "SSO removed", output: TASK_COMPLETE`;
 
@@ -412,13 +424,25 @@ app.post('/edit', async (req, res) => {
       console.log(`[${jobId}] Saved upload: ${upload.name} (${buf.length} bytes)`);
     }
 
-    // Fetch current HTML from the existing Vercel clone
-    const htmlResp = await fetch(cloneUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
-    });
-    if (!htmlResp.ok) throw new Error(`Failed to fetch clone HTML: HTTP ${htmlResp.status}`);
-    const html = await htmlResp.text();
-    if (html.length < 1000) throw new Error(`Fetched HTML too small (${html.length} bytes) — clone URL may be invalid`);
+    // Fetch current HTML from the existing Vercel clone — retry up to 3 times
+    let html = null, fetchErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const htmlResp = await fetch(cloneUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
+        });
+        if (!htmlResp.ok) throw new Error(`HTTP ${htmlResp.status}`);
+        const candidate = await htmlResp.text();
+        if (candidate.length < 1000) throw new Error(`HTML too small: ${candidate.length} bytes`);
+        html = candidate;
+        break;
+      } catch (e) {
+        fetchErr = e;
+        console.log(`[${jobId}] Fetch attempt ${attempt} failed: ${e.message}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
+      }
+    }
+    if (!html) throw new Error(`Failed to fetch clone HTML after 3 attempts: ${fetchErr.message}`);
     fs.writeFileSync(`${jobDir}/page.html`, html, 'utf8');
     console.log(`[${jobId}] Fetched HTML: ${html.length} bytes`);
 
