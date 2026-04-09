@@ -46,7 +46,7 @@ function writeFile(filePath, content) {
 }
 
 // Agentic loop: Claude calls tools to clone the page
-async function runCloneAgent(jobDir, url, instructions, vercelToken) {
+async function runCloneAgent(jobDir, url, instructions, vercelToken, jobId) {
   const tools = [
     {
       name: 'bash',
@@ -123,7 +123,7 @@ print('Headlines found:', titles)
 5. bash: python3 ${jobDir}/transform.py && echo "Transform done"
 6. bash: mkdir -p ${jobDir}/clone && cp ${jobDir}/page.html ${jobDir}/clone/index.html && cp -r ${jobDir}/assets ${jobDir}/clone/assets && cp -r ${jobDir}/uploads ${jobDir}/clone/uploads 2>/dev/null || true
 7. write_file: ${jobDir}/clone/vercel.json with content: {"version":2}
-8. bash: cd ${jobDir}/clone && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
+8. bash: cd ${jobDir}/clone && vercel deploy --prod --yes --scope grrow --token ${vercelToken} --name clone-${jobId.slice(0,8)}
 9. Output the Vercel URL on its own line as: DEPLOYED_URL=https://[url]`;
 
   const messages = [{ role: 'user', content: userMessage }];
@@ -151,7 +151,7 @@ print('Headlines found:', titles)
       if (block.type === 'text') {
         const match = block.text.match(/DEPLOYED_URL=(https:\/\/[a-zA-Z0-9\-\.]+\.vercel\.app)/);
         if (match) {
-          deployedUrl = match[1].trim();
+          deployedUrl = match[1].trim().replace(/[^a-zA-Z0-9:/.]/g, '');
           console.log(`[Agent] Got URL: ${deployedUrl}`);
         }
       }
@@ -172,7 +172,7 @@ print('Headlines found:', titles)
             // Check if deploy output has a URL
             if (block.input.command.includes('vercel deploy')) {
               const match = (result.output || '').match(/https:\/\/[a-z0-9-]+\.vercel\.app/g);
-              if (match) deployedUrl = match[match.length - 1];
+              if (match) deployedUrl = match[match.length - 1].replace(/[^a-zA-Z0-9:/.]/g, '');
             }
           } else if (block.name === 'read_file') {
             result = readFile(block.input.path);
@@ -219,7 +219,7 @@ app.post('/clone', async (req, res) => {
     }
 
     const vercelToken = process.env.VERCEL_TOKEN;
-    const deployedUrl = await runCloneAgent(jobDir, url, instructions, vercelToken);
+    const deployedUrl = await runCloneAgent(jobDir, url, instructions, vercelToken, jobId);
 
     if (!deployedUrl) throw new Error('Agent completed but no Vercel URL was found in output');
 
