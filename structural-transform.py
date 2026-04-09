@@ -105,6 +105,28 @@ elif '<body' in html:
 
 print(f'Popup removal done. Klaviyo refs remaining: {len(re.findall(r"klaviyo", html, re.I))}')
 
+# ── 0b. Strip Replo / page-builder artifacts ─────────────────────────────────
+# Replo (Shopify page builder) can leave unresolved {{template}} vars and
+# UUID strings as visible link/text nodes at the top of the page.
+# Remove img tags that still have unresolved {{...}} in src (broken images)
+html = re.sub(
+    r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+    '', html, flags=re.IGNORECASE
+)
+# Remove anchor tags whose text content is a bare UUID (Replo component links)
+html = re.sub(
+    r'<a[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</a>',
+    '', html, flags=re.IGNORECASE
+)
+# Replace any remaining {{...}} template vars in alt/title attributes with empty string
+html = re.sub(r'((?:alt|title|aria-label)=["\'])[^"\']*\{\{[^}]+\}\}[^"\']*(["\'])', r'\1\2', html, flags=re.IGNORECASE)
+
+template_var_count = len(re.findall(r'\{\{[^}]+\}\}', html))
+if template_var_count > 0:
+    print(f'WARNING: {template_var_count} unresolved {{{{...}}}} template vars remain after cleanup')
+else:
+    print('Replo/template var cleanup: clean')
+
 # ── 1. Remove Wistia / video player scripts ──────────────────────────────────
 # Remove <script> tags whose src contains video platform keywords
 html = re.sub(
