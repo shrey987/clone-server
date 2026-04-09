@@ -59,29 +59,42 @@ html = re.sub(
     video_placeholder, html, flags=re.DOTALL | re.IGNORECASE
 )
 
+# Insert poster image into Wistia placeholder containers.
+# Wistia uses #ekran1, #ekran, etc. as mount points that JS fills with the video player.
+# Since we strip Wistia scripts, these are empty. Insert the poster img into each.
+# Pattern: <div id="ekran..."></div>  →  <div id="ekran..."><img src=poster /></div>
+if poster_img:
+    poster_tag = f'<img src="{poster_img}" style="width:100%;display:block;cursor:pointer;" id="video-poster-placeholder" alt="Play Video">'
+    html = re.sub(
+        r'(<div[^>]+id=["\']ekran\w*["\'][^>]*>)(</div>)',
+        lambda m: m.group(1) + poster_tag + m.group(2),
+        html, flags=re.IGNORECASE
+    )
+    print(f'Poster injected into ekran containers: {poster_img}')
+
 # Inject CSS to hide Wistia/video JS-generated DOM overlay elements.
 # When Playwright renders the page, Wistia JS creates a complex DOM tree (wistia_grid_*, w-vulcan-v2,
 # w-ui-container, etc.) that overlays on top of everything, showing as a black box because the
 # blob: video src can't load cross-domain. Hide all of these via injected CSS, leaving the
 # poster img placeholder visible beneath them.
-wistia_css = '''<style id="clone-video-fix">
+wistia_css = f'''<style id="clone-video-fix">
   /* Hide Wistia JS-rendered player overlay — blob: video won't load cross-domain */
   .wistia_responsive_padding, .wistia_responsive_wrapper,
   .wistia_embed, [id^="wistia_chrome"], [id^="wistia_grid_"],
   [id^="w-vulcan"], .w-ui-container, .w-video-wrapper, .w-chrome,
-  video[src^="blob:"], video[src*="fast.wistia"] {
+  video[src^="blob:"], video[src*="fast.wistia"] {{
     display: none !important;
     height: 0 !important;
     overflow: hidden !important;
-  }
-  /* Show the original thumbnail/poster that the page hides until video loads */
-  #thumb, img.pulsing, img[id="thumb"] {
+  }}
+  /* Show poster placeholder and original thumbnail */
+  #video-poster-placeholder, #thumb, img.pulsing {{
     display: block !important;
     width: 100% !important;
     cursor: pointer !important;
-  }
+  }}
   /* Keep loading overlay hidden */
-  #LoadingDiv { display: none !important; }
+  #LoadingDiv {{ display: none !important; }}
 </style>'''
 
 if '</head>' in html:
