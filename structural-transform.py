@@ -213,40 +213,50 @@ html = re.sub(r'<img[^>]+>', fix_lazy, html)
 # image to stay at thumbnail size. Inject CSS to force the first carousel slide
 # to display as a large image if we detect a Replo/Shopify carousel.
 gallery_fix_css = '''<style id="clone-gallery-fix">
-/* Fix collapsed carousel containers — force visible with proper dimensions */
-.slider-container, .swiper-container, .carousel-container,
-[class*="slider-container"], [class*="swiper-container"] {
+/* ── Replo carousel fix ── */
+/* Replo sets carousel dimensions via JS + CSS custom properties.
+   On static clones the JS never runs, so containers collapse to 0x0.
+   Fix: set the CSS vars and force dimensions. */
+[data-replo-component-root="carousel"] {
+  --replo-carousel-slides-per-page: 1 !important;
+  --replo-gap: 0px !important;
   width: 100% !important;
-  height: auto !important;
   min-height: 400px !important;
-  overflow: visible !important;
+  overflow: hidden !important;
   position: relative !important;
 }
-.slider-wrapper, .swiper-wrapper, .carousel-wrapper,
-[class*="slider-wrapper"], [class*="swiper-wrapper"] {
+/* The viewport/track that holds slides */
+[data-replo-component-root="carousel"] > div {
   display: flex !important;
   width: 100% !important;
-  height: auto !important;
   min-height: 400px !important;
+  overflow: hidden !important;
 }
-/* Show first slide at full size, hide others */
-.slider-wrapper > *:first-child,
-.swiper-wrapper > *:first-child,
-[class*="slider-wrapper"] > *:first-child {
+/* Show first slide at full width */
+[data-replo-part="slide"][data-slide-index="0"],
+[data-replo-part="slide"][data-is-active="true"] {
   flex: 0 0 100% !important;
   width: 100% !important;
-  display: block !important;
+  display: flex !important;
+  min-height: 400px !important;
 }
-.slider-wrapper > *:not(:first-child),
-.swiper-wrapper > *:not(:first-child) {
+/* Hide non-active slides */
+[data-replo-part="slide"]:not([data-slide-index="0"]) {
   display: none !important;
 }
-/* Force images inside carousel to display properly */
-.slider-container img, .swiper-container img,
-[class*="slider-container"] img {
+/* Force product images inside Replo carousels to display */
+[data-replo-component-root="carousel"] img,
+[data-replo-component-root="carousel"] picture {
   max-width: 100% !important;
+  width: 100% !important;
   height: auto !important;
   object-fit: contain !important;
+  display: block !important;
+}
+/* Generic carousel fixes (Swiper, Slick, etc.) */
+.swiper-container, .slick-slider {
+  width: 100% !important;
+  overflow: hidden !important;
 }
 </style>'''
 
