@@ -105,7 +105,7 @@ ${instructions || 'No changes — deploy as exact clone.'}
 IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, write Python scripts using write_file and run them with bash. This avoids token limits.
 
 STEPS:
-1. bash: curl -sL -A "Mozilla/5.0" "${url}" -o ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
+1. bash: node /app/playwright-capture.js "${url}" ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
 2. bash: python3 /app/download-assets.py "${jobDir}"
 3. bash: python3 -c "
 import re
