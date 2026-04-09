@@ -28,7 +28,7 @@ function runBash(command) {
 function readFile(filePath) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    return { success: true, content: content.slice(0, 50000) }; // cap at 50KB
+    return { success: true, content: content.slice(0, 8000) }; // cap at 8KB to stay within token limits
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -93,26 +93,38 @@ CRITICAL RULES:
 - Use read_file to read HTML files
 - Use write_file to write modified HTML files`;
 
-  const userMessage = `Clone this landing page: ${url}
+  const userMessage = `Clone this landing page and apply brand changes. Complete all steps autonomously.
 
-CHANGES TO MAKE:
+URL: ${url}
+Job dir: ${jobDir}
+Vercel token: ${vercelToken}
+
+BRAND CHANGES REQUESTED:
 ${instructions || 'No changes — deploy as exact clone.'}
 
-STEPS:
-1. Fetch the page: curl -sL -A "Mozilla/5.0" "${url}" -o ${jobDir}/page.html
-2. Run: python3 /app/download-assets.py "${jobDir}"
-3. Read ${jobDir}/page.html (first 30KB to understand structure)
-4. Apply the changes described above — modify the HTML directly using write_file
-5. Fix any lazy-loaded images (src="" with data-src) — set src = data-src value
-6. Create ${jobDir}/clone/ directory
-7. Write modified HTML to ${jobDir}/clone/index.html
-8. Copy assets: cp -r ${jobDir}/assets ${jobDir}/clone/assets
-9. Copy uploads if any: cp -r ${jobDir}/uploads ${jobDir}/clone/uploads 2>/dev/null || true
-10. Write ${jobDir}/clone/vercel.json with content: {"version":2}
-11. Deploy: cd ${jobDir}/clone && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
-12. Return the Vercel URL from the deploy output
+IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, write Python scripts using write_file and run them with bash. This avoids token limits.
 
-After deploying, output the final URL on its own line as: DEPLOYED_URL=https://...`;
+STEPS:
+1. bash: curl -sL -A "Mozilla/5.0" "${url}" -o ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
+2. bash: python3 /app/download-assets.py "${jobDir}"
+3. bash: python3 -c "
+import re
+with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()
+# Print first 3 headings/titles to understand structure
+titles=re.findall(r'<h[1-3][^>]*>([^<]{5,100})</h[1-3]>',h)[:5]
+print('Headlines found:', titles)
+"
+4. write_file a Python script at ${jobDir}/transform.py that makes ALL the requested brand changes. The script should:
+   - Read ${jobDir}/page.html
+   - Make text/copy changes using string replacement or regex
+   - For uploaded assets in ${jobDir}/uploads/, replace matching src/url references
+   - Fix lazy-loaded images (src="" → src=data-src value)
+   - Write the modified HTML back to ${jobDir}/page.html
+5. bash: python3 ${jobDir}/transform.py && echo "Transform done"
+6. bash: mkdir -p ${jobDir}/clone && cp ${jobDir}/page.html ${jobDir}/clone/index.html && cp -r ${jobDir}/assets ${jobDir}/clone/assets && cp -r ${jobDir}/uploads ${jobDir}/clone/uploads 2>/dev/null || true
+7. write_file: ${jobDir}/clone/vercel.json with content: {"version":2}
+8. bash: cd ${jobDir}/clone && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
+9. Output the Vercel URL on its own line as: DEPLOYED_URL=https://[url]`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
