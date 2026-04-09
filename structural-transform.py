@@ -177,9 +177,8 @@ if '/products/' in base_url:
             )
             print(f'Replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
 
-        # For Replo carousels that collapsed: replace the carousel entirely with static images
+        # For Replo carousels: REMOVE the broken carousel DOM and replace with static gallery
         if shopify_imgs and has_replo_carousel:
-            # Build a clean static product gallery
             thumbs = ''
             for i, src in enumerate(shopify_imgs[:8]):
                 border = '2px solid #333' if i == 0 else '1px solid #ddd'
@@ -190,31 +189,38 @@ if '/products/' in base_url:
   <div id="clone-hero-thumbs" style="display:flex;gap:8px;overflow-x:auto;">{thumbs}</div>
 </div>'''
 
-            # Find and REPLACE the first Replo carousel container (the broken one)
-            # Strategy: find the outermost data-rid parent that contains the carousel
-            carousel_match = re.search(
-                r'(<div[^>]*data-replo-component-root="carousel"[^>]*>)',
-                html
-            )
-            if carousel_match:
-                # Find the start of the grandparent data-rid div
-                # Work backwards from carousel to find the enclosing container
-                search_start = max(0, carousel_match.start() - 2000)
-                pre_context = html[search_start:carousel_match.start()]
-
-                # Find the outermost <div data-rid=... that leads to this carousel
-                parent_opens = list(re.finditer(r'<div[^>]*data-rid="[^"]*"[^>]*>', pre_context))
-                if parent_opens:
-                    # Use the most recent data-rid parent
-                    parent_start = search_start + parent_opens[-1].start()
-                    # Now find the matching closing </div> for the entire carousel section
-                    # Simple approach: just inject before and hide carousel with CSS
-                    html = html[:parent_start] + gallery_html + '\n' + html[parent_start:]
-                    print(f'Injected static gallery ({len(shopify_imgs)} images) before Replo carousel')
-                else:
-                    # Fallback: inject before carousel directly
-                    html = html[:carousel_match.start()] + gallery_html + '\n' + html[carousel_match.start():]
-                    print(f'Injected static gallery before Replo carousel (no parent found)')
+            # Remove ALL Replo carousel elements from DOM (they render as 0x0 on static clones)
+            # Match the full carousel block: <div data-replo-component-root="carousel" ...>...</div>
+            # Use a depth-tracking approach to find the matching closing tag
+            carousel_starts = list(re.finditer(r'<div[^>]*data-replo-component-root="carousel"[^>]*>', html))
+            if carousel_starts:
+                # Remove each carousel by tracking div nesting depth
+                removed = 0
+                for cm in reversed(carousel_starts):  # reverse to preserve earlier indices
+                    start = cm.start()
+                    depth = 1
+                    pos = cm.end()
+                    while depth > 0 and pos < len(html):
+                        next_open = html.find('<div', pos)
+                        next_close = html.find('</div>', pos)
+                        if next_close == -1:
+                            break
+                        if next_open != -1 and next_open < next_close:
+                            depth += 1
+                            pos = next_open + 4
+                        else:
+                            depth -= 1
+                            if depth == 0:
+                                end = next_close + 6  # len('</div>')
+                                # Replace this carousel with nothing (first one gets the gallery)
+                                if removed == 0:
+                                    html = html[:start] + gallery_html + html[end:]
+                                else:
+                                    html = html[:start] + html[end:]
+                                removed += 1
+                                break
+                            pos = next_close + 6
+                print(f'Replaced {removed} Replo carousel(s) with static gallery ({len(shopify_imgs)} images)')
     except Exception as e:
         print(f'Shopify product image injection failed: {e}')
 
@@ -254,62 +260,15 @@ html = re.sub(r'<img[^>]+>', fix_lazy, html)
 # image to stay at thumbnail size. Inject CSS to force the first carousel slide
 # to display as a large image if we detect a Replo/Shopify carousel.
 gallery_fix_css = '''<style id="clone-gallery-fix">
-/* ── Replo carousel fix ── */
-/* Replo sets carousel dimensions via JS + CSS custom properties.
-   On static clones the JS never runs, so containers collapse to 0x0.
-   Fix: set the CSS vars and force dimensions. */
-[data-replo-component-root="carousel"] {
-  --replo-carousel-slides-per-page: 1 !important;
-  --replo-gap: 0px !important;
-  width: 100% !important;
-  min-height: 400px !important;
-  overflow: hidden !important;
-  position: relative !important;
-}
-/* The viewport/track that holds slides */
-[data-replo-component-root="carousel"] > div {
-  display: flex !important;
-  width: 100% !important;
-  min-height: 400px !important;
-  overflow: hidden !important;
-}
-/* Show first slide at full width */
-[data-replo-part="slide"][data-slide-index="0"],
-[data-replo-part="slide"][data-is-active="true"] {
-  flex: 0 0 100% !important;
-  width: 100% !important;
-  display: flex !important;
-  min-height: 400px !important;
-}
-/* Hide non-active slides */
-[data-replo-part="slide"]:not([data-slide-index="0"]) {
-  display: none !important;
-}
-/* Force product images inside Replo carousels to display */
-[data-replo-component-root="carousel"] img,
-[data-replo-component-root="carousel"] picture {
-  max-width: 100% !important;
-  width: 100% !important;
-  height: auto !important;
-  object-fit: contain !important;
-  display: block !important;
-}
-/* Generic carousel fixes (Swiper, Slick, etc.) */
-.swiper-container, .slick-slider {
-  width: 100% !important;
-  overflow: hidden !important;
-}
-/* Static gallery replaces broken Replo carousel */
+/* Static product gallery (replaces broken Replo/GemPages carousels) */
 #clone-hero-gallery {
   display: block !important;
   width: 100% !important;
   max-width: 600px !important;
 }
-/* When static gallery is injected, hide the broken Replo carousel after it */
-#clone-hero-gallery ~ [data-replo-component-root="carousel"],
-#clone-hero-gallery ~ div [data-replo-component-root="carousel"] {
-  display: none !important;
-  height: 0 !important;
+/* Generic carousel fixes (Swiper, Slick) */
+.swiper-container, .slick-slider {
+  width: 100% !important;
   overflow: hidden !important;
 }
 </style>'''
