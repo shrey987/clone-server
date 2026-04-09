@@ -65,10 +65,22 @@ html = re.sub(
 # blob: video src can't load cross-domain. Hide all of these via injected CSS, leaving the
 # poster img placeholder visible beneath them.
 wistia_css = '''<style id="clone-video-fix">
-  [id^="wistia_grid_"], [id^="w-vulcan"], .w-ui-container, .w-video-wrapper,
+  /* Hide Wistia JS-rendered player overlay — blob: video won't load cross-domain */
+  .wistia_responsive_padding, .wistia_responsive_wrapper,
+  .wistia_embed, [id^="wistia_chrome"], [id^="wistia_grid_"],
+  [id^="w-vulcan"], .w-ui-container, .w-video-wrapper, .w-chrome,
   video[src^="blob:"], video[src*="fast.wistia"] {
     display: none !important;
+    height: 0 !important;
+    overflow: hidden !important;
   }
+  /* Show the original thumbnail/poster that the page hides until video loads */
+  #thumb, img.pulsing, img[id="thumb"] {
+    display: block !important;
+    width: 100% !important;
+    cursor: pointer !important;
+  }
+  /* Keep loading overlay hidden */
   #LoadingDiv { display: none !important; }
 </style>'''
 
