@@ -53,31 +53,50 @@ video_placeholder = (
     'justify-content:center;color:#fff;font-size:32px;font-weight:bold;cursor:pointer;">▶ Watch Video</div>'
 )
 
-# Replace wistia embed containers
-html = re.sub(
-    r'<div[^>]+class=["\'][^"\']*wistia[^"\']*["\'][^>]*>.*?</div>',
-    video_placeholder, html, flags=re.DOTALL | re.IGNORECASE
-)
 # Replace iframes (YouTube, Vimeo, Wistia)
 html = re.sub(
     r'<iframe[^>]+src=["\'][^"\']*(?:youtube|youtu\.be|vimeo|wistia|vidyard)[^"\']*["\'][^>]*>.*?</iframe>',
     video_placeholder, html, flags=re.DOTALL | re.IGNORECASE
 )
 
+# Inject CSS to hide Wistia/video JS-generated DOM overlay elements.
+# When Playwright renders the page, Wistia JS creates a complex DOM tree (wistia_grid_*, w-vulcan-v2,
+# w-ui-container, etc.) that overlays on top of everything, showing as a black box because the
+# blob: video src can't load cross-domain. Hide all of these via injected CSS, leaving the
+# poster img placeholder visible beneath them.
+wistia_css = '''<style id="clone-video-fix">
+  [id^="wistia_grid_"], [id^="w-vulcan"], .w-ui-container, .w-video-wrapper,
+  video[src^="blob:"], video[src*="fast.wistia"] {
+    display: none !important;
+  }
+  #LoadingDiv { display: none !important; }
+</style>'''
+
+if '</head>' in html:
+    html = html.replace('</head>', wistia_css + '\n</head>', 1)
+elif '<body' in html:
+    html = html.replace('<body', wistia_css + '\n<body', 1)
+
 # ── 3. Strip VSL video gates ──────────────────────────────────────────────────
-# Elements hidden with inline height:0 (common VSL pattern to reveal on video end)
-# Only strip height:0 when it's the ONLY height constraint (not part of a bigger style)
+# VSL pages hide pricing/CTA sections until video plays, using either:
+#   - style="height:0; overflow:hidden" on divs/sections
+#   - style="display:none" on main/div/section containers
+# Strip BOTH patterns from ALL block-level elements.
+
 def unhide_element(m):
     tag = m.group(0)
-    # Remove height:0 and overflow:hidden from inline style
+    # Remove height:0, max-height:0, overflow:hidden, display:none from inline style
     tag = re.sub(r'height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'overflow\s*:\s*hidden\s*;?\s*', '', tag, flags=re.IGNORECASE)
     tag = re.sub(r'max-height\s*:\s*0\s*(?:px)?;?\s*', '', tag, flags=re.IGNORECASE)
+    tag = re.sub(r'display\s*:\s*none\s*;?\s*', '', tag, flags=re.IGNORECASE)
+    # Clean up empty style attribute
+    tag = re.sub(r'\s*style\s*=\s*["\']["\']', '', tag)
     return tag
 
-# Target opening tags of divs/sections that have height:0 in their style
+# Target opening tags of block elements that have height:0 OR display:none in their style
 html = re.sub(
-    r'<(?:div|section|article)[^>]+style=["\'][^"\']*height\s*:\s*0[^"\']*["\'][^>]*>',
+    r'<(?:div|section|article|main|aside|header|footer)[^>]+style=["\'][^"\']*(?:height\s*:\s*0|display\s*:\s*none)[^"\']*["\'][^>]*>',
     unhide_element, html, flags=re.IGNORECASE
 )
 
