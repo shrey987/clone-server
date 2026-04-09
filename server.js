@@ -125,7 +125,7 @@ print('Headlines found:', titles)
 7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
 8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
 9. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
-10. Output EXACTLY this line (no markdown, no asterisks): DEPLOYED_URL=https://clone-${jobId.slice(0,8)}.vercel.app`;
+10. When step 9 says "SSO removed", output: TASK_COMPLETE`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
@@ -147,14 +147,10 @@ print('Headlines found:', titles)
     // Add assistant response to messages
     messages.push({ role: 'assistant', content: response.content });
 
-    // Check for DEPLOYED_URL in text blocks
+    // Check for TASK_COMPLETE signal in text blocks
     for (const block of response.content) {
-      if (block.type === 'text') {
-        const match = block.text.match(/DEPLOYED_URL=(https:\/\/[a-zA-Z0-9\-\.]+\.vercel\.app)/);
-        if (match) {
-          deployedUrl = match[1].trim();
-          console.log(`[Agent] Got URL: ${deployedUrl}`);
-        }
+      if (block.type === 'text' && block.text.includes('TASK_COMPLETE')) {
+        console.log(`[Agent] Task complete signal received`);
       }
     }
 
@@ -189,12 +185,13 @@ print('Headlines found:', titles)
     }
   }
 
-  // Fallback: if agent didn't output DEPLOYED_URL, construct from known project name
-  if (!deployedUrl) {
-    const projectName = `clone-${jobId.slice(0,8)}`;
-    const projectUrl = `https://${projectName}.vercel.app`;
-    const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
-    if (check && check.status < 400) deployedUrl = projectUrl;
+  // Always derive URL from known project name (deterministic, avoids agent URL parsing issues)
+  const projectName = `clone-${jobId.slice(0,8)}`;
+  const projectUrl = `https://${projectName}.vercel.app`;
+  const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
+  if (check && check.status < 400) {
+    deployedUrl = projectUrl;
+    console.log(`[Agent] Verified project URL: ${deployedUrl}`);
   }
 
   return deployedUrl;
