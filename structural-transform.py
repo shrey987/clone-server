@@ -87,9 +87,14 @@ wistia_css = f'''<style id="clone-video-fix">
     height: 0 !important;
     overflow: hidden !important;
   }}
-  /* Unhide Wistia mount points (Wistia JS sets display:none on these via JS) */
+  /* Unhide Wistia mount points (Wistia JS sets display:none and height:Xpx on these via JS) */
   [id^="ekran"] {{
     display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }}
+  /* Reset Wistia-collapsed video container heights (Wistia JS sets height:6px inline) */
+  #video1, #video, #video2 {{
     height: auto !important;
     overflow: visible !important;
   }}
