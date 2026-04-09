@@ -113,9 +113,9 @@ html = re.sub(
     r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
     '', html, flags=re.IGNORECASE
 )
-# Remove anchor tags whose text content is a bare UUID (Replo component links)
+# Remove ANY element whose visible text is a bare UUID (Replo component IDs leak as links/text)
 html = re.sub(
-    r'<a[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</a>',
+    r'<(?:a|span|div|p)[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</(?:a|span|div|p)>',
     '', html, flags=re.IGNORECASE
 )
 # Replace any remaining {{...}} template vars in alt/title attributes with empty string
@@ -126,6 +126,64 @@ if template_var_count > 0:
     print(f'WARNING: {template_var_count} unresolved {{{{...}}}} template vars remain after cleanup')
 else:
     print('Replo/template var cleanup: clean')
+
+# ── 0c. Inject Shopify product image gallery if product images were downloaded ─
+import json as _json3
+shopify_manifest = os.path.join(job_dir, 'shopify-images.json')
+if os.path.exists(shopify_manifest):
+    with open(shopify_manifest) as f:
+        shopify_imgs = _json3.load(f)
+    if shopify_imgs:
+        # Build a static product gallery with main image + clickable thumbnails
+        thumbs_html = ''
+        for i, img_path in enumerate(shopify_imgs):
+            border = '2px solid #333' if i == 0 else '1px solid #ddd'
+            thumbs_html += (
+                f'<img src="{img_path}" alt="Product {i+1}" '
+                f'style="width:80px;height:80px;object-fit:cover;cursor:pointer;'
+                f'border:{border};border-radius:4px;" '
+                f'onclick="document.getElementById(\'spg-main\').src=this.src;'
+                f'document.querySelectorAll(\'#spg-thumbs img\').forEach(function(i){{i.style.borderColor=\'#ddd\';i.style.borderWidth=\'1px\'}});'
+                f'this.style.borderColor=\'#333\';this.style.borderWidth=\'2px\'" />\n'
+            )
+
+        gallery_html = f'''<div id="static-product-gallery" style="width:100%;max-width:600px;padding:0 10px;">
+  <div style="width:100%;margin-bottom:12px;background:#f7f7f7;border-radius:8px;overflow:hidden;">
+    <img id="spg-main" src="{shopify_imgs[0]}" alt="Product" style="width:100%;max-height:600px;object-fit:contain;display:block;" />
+  </div>
+  <div id="spg-thumbs" style="display:flex;gap:8px;flex-wrap:wrap;">
+    {thumbs_html}
+  </div>
+</div>'''
+
+        # Find the product section and inject gallery at the start of the
+        # first product-info/product-media/gallery area.
+        # Strategy: find the main product section (often has class containing 'product')
+        # and inject gallery as first child.
+        injected = False
+
+        # Try: find the <section> or <div> whose class contains "product" and inject
+        product_section = re.search(
+            r'(<(?:section|div|main)[^>]+class=["\'][^"\']*(?:product|ProductPage|product-page|product__media|media-gallery)[^"\']*["\'][^>]*>)',
+            html, re.IGNORECASE
+        )
+        if product_section:
+            insert_point = product_section.end()
+            html = html[:insert_point] + '\n' + gallery_html + '\n' + html[insert_point:]
+            injected = True
+
+        # Fallback: inject just before the product title (h1 containing the product name)
+        if not injected:
+            h1_match = re.search(r'<h1[^>]*>', html)
+            if h1_match:
+                # Find the parent container of the h1 and inject before it
+                html = html[:h1_match.start()] + gallery_html + '\n' + html[h1_match.start():]
+                injected = True
+
+        if injected:
+            print(f'Shopify gallery injected: {len(shopify_imgs)} product images')
+        else:
+            print('WARNING: Could not find injection point for Shopify gallery')
 
 # ── 1. Remove Wistia / video player scripts ──────────────────────────────────
 # Remove <script> tags whose src contains video platform keywords

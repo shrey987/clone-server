@@ -154,6 +154,56 @@ for wid in wistia_ids:
     except Exception as e:
         print(f'Wistia thumb SKIP {wid}: {e}')
 
+# ── Download Shopify product images from product JSON API ────────────────────
+# Shopify product pages have images loaded via JS/Liquid that don't appear in
+# static HTML. Fetch from /products/{handle}.json for the real image URLs.
+import json as _json2
+if '/products/' in base_url:
+    try:
+        # Extract product handle: /products/travel-cushion → travel-cushion
+        path_parts = parsed.path.strip('/').split('/')
+        prod_idx = path_parts.index('products')
+        handle = path_parts[prod_idx + 1].split('?')[0].split('#')[0]
+        product_json_url = f'{origin}/products/{handle}.json'
+        print(f'Shopify product detected: fetching {product_json_url}')
+
+        req = urllib.request.Request(
+            product_json_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            pdata = _json2.loads(resp.read())
+
+        images = pdata.get('product', {}).get('images', [])
+        shopify_img_paths = []
+        for i, img in enumerate(images):
+            img_src = img.get('src', '')
+            if not img_src:
+                continue
+            fname = f'shopify-product-{i}.jpg'
+            local = os.path.join(assets_dir, fname)
+            try:
+                req2 = urllib.request.Request(
+                    img_src,
+                    headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+                )
+                with urllib.request.urlopen(req2, timeout=20) as resp2:
+                    with open(local, 'wb') as f:
+                        f.write(resp2.read())
+                shopify_img_paths.append(f'assets/{fname}')
+                print(f'Shopify img: {fname}  ({img_src[:60]})')
+            except Exception as e:
+                print(f'Shopify img SKIP {i}: {e}')
+
+        # Write a manifest so structural-transform can find them
+        if shopify_img_paths:
+            manifest = os.path.join(job_dir, 'shopify-images.json')
+            with open(manifest, 'w') as f:
+                _json2.dump(shopify_img_paths, f)
+            print(f'Shopify: {len(shopify_img_paths)} product images downloaded')
+    except Exception as e:
+        print(f'Shopify product JSON failed: {e}')
+
 with open(html_path, 'w', encoding='utf-8') as f:
     f.write(html)
 
