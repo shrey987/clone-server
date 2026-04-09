@@ -107,22 +107,26 @@ IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, w
 STEPS:
 1. bash: node /app/playwright-capture.js "${url}" ${jobDir}/page.html && echo "Fetched: $(wc -c < ${jobDir}/page.html) bytes"
 2. bash: python3 /app/download-assets.py "${jobDir}" "${url}"
-3. bash: python3 -c "
+3. bash: python3 /app/structural-transform.py "${jobDir}" && echo "Structural transform OK"
+4. bash: python3 -c "
 import re
 with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()
-# Print first 3 headings/titles to understand structure
 titles=re.findall(r'<h[1-3][^>]*>([^<]{5,100})</h[1-3]>',h)[:5]
 print('Headlines found:', titles)
+print('Body tag present:', '<body' in h.lower())
+print('Size:', len(h))
 "
-4. write_file a Python script at ${jobDir}/transform.py that makes ALL the requested brand changes. The script should:
-   - Read ${jobDir}/page.html
-   - CRITICAL — Strip VSL video gates: many pages hide pricing/CTA sections until a video plays. Find elements with style="height:0" or style="height: 0" or style containing "overflow:hidden;height:0" or style="display:none" and remove those hiding styles so all content is visible. Also remove any JS that adds/removes classes to reveal content on video end (look for videoEnded, video_ended, onended handlers that toggle visibility).
-   - CRITICAL — Remove all video player scripts AND replace embeds: (a) Remove ALL <script> tags whose src or content contains "wistia", "vidyard", "vimeo", "youtube", "jwplayer" — they hijack the DOM and add gray backgrounds. (b) For each video container (div with class containing "wistia", "video", "embed"), look for any downloaded poster/thumbnail image in the assets/ folder (playscreen*.png, poster*, thumbnail*, video-thumb*) — if found, replace the entire container with <img src="assets/FILENAME" style="width:100%;display:block;">. If no poster found, replace with: <div style="background:#1a1a1a;width:100%;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;font-weight:bold;">▶ Watch Video</div>. (c) Also remove any inline JS that references Wistia, _wq, wistiaEmbed.
-   - Make text/copy changes using string replacement or regex
-   - For uploaded assets in ${jobDir}/uploads/, replace matching src/url references
-   - Fix lazy-loaded images (src="" → src=data-src value)
-   - Write the modified HTML back to ${jobDir}/page.html
-5. bash: python3 ${jobDir}/transform.py && echo "Transform done"
+5. ${instructions && instructions.trim() !== 'No changes — deploy as exact clone.' ? `write_file a Python script at ${jobDir}/brand-transform.py that makes ONLY the brand changes listed below. Keep it simple — use only str.replace() and re.sub() for text substitution. Do NOT restructure or rewrite any HTML. Do NOT remove any tags. Do NOT touch video, scripts, or style blocks. ONLY change the specific text, colors, images, or copy requested.
+
+The script must:
+   - Read the ENTIRE ${jobDir}/page.html into a variable
+   - Make ONLY these changes using simple string replacement:
+     ${instructions}
+   - For uploaded assets in ${jobDir}/uploads/, replace matching image src references with uploads/FILENAME
+   - CRITICAL: Write the COMPLETE modified HTML back (must contain both <head> and <body>). Use: open('${jobDir}/page.html','w').write(html)
+   - Print file size at end: print(f"Brand transform done. Size: {len(html)}")
+
+Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK"` : `bash: echo "No brand changes requested — skipping brand transform"`}
 6. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
 7. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
 8. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken}
