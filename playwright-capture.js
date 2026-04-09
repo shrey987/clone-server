@@ -167,12 +167,24 @@ const ASSET_EXTENSIONS = /\.(jpg|jpeg|png|webp|gif|svg|avif|ico|mp4|webm|mov|wof
         const localPath = path.join(assetsDir, fileName);
 
         fs.writeFileSync(localPath, buffer);
-        urlMap.set(reqUrl, `assets/${fileName}`);
+        const assetRef = `assets/${fileName}`;
+        urlMap.set(reqUrl, assetRef);
 
         // Also map the URL without query string (many HTML refs strip params)
         const noQuery = reqUrl.split('?')[0];
         if (noQuery !== reqUrl && !urlMap.has(noQuery)) {
-          urlMap.set(noQuery, `assets/${fileName}`);
+          urlMap.set(noQuery, assetRef);
+        }
+
+        // Map protocol-relative version (//domain.com/path → same asset)
+        // HTML often has //cdn.shopify.com/... while browser resolves to https://cdn.shopify.com/...
+        if (reqUrl.startsWith('https://')) {
+          const protoRelative = reqUrl.replace('https:', '');
+          urlMap.set(protoRelative, assetRef);
+          const protoRelativeNoQuery = noQuery.replace('https:', '');
+          if (!urlMap.has(protoRelativeNoQuery)) {
+            urlMap.set(protoRelativeNoQuery, assetRef);
+          }
         }
 
         assetCounter++;

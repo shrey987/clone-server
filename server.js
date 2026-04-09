@@ -80,9 +80,11 @@ async function runCloneAgent(jobDir, url, instructions, vercelToken, jobId) {
     }
   ];
 
+  const scriptDir = __dirname;
   const systemPrompt = `You are a landing page cloning agent. You have access to bash, read_file, and write_file tools. Complete the task fully — do not stop until you have a deployed Vercel URL.
 
 Job directory: ${jobDir}
+Script directory: ${scriptDir}
 Vercel token: ${vercelToken}
 Vercel scope: grrow
 
@@ -91,7 +93,8 @@ CRITICAL RULES:
 - Use ONLY these tools: bash (for curl, cp, mkdir, python3, vercel), read_file, write_file
 - Use bash for all file system operations and deployments
 - Use read_file to read HTML files
-- Use write_file to write modified HTML files`;
+- Use write_file to write modified HTML files
+- ALWAYS use the scripts at ${scriptDir}/ for capture and transforms. NEVER write your own capture scripts.`;
 
   const userMessage = `Clone this landing page and apply brand changes. Complete all steps autonomously.
 
@@ -105,8 +108,8 @@ ${instructions || 'No changes — deploy as exact clone.'}
 IMPORTANT: The HTML file is large. DO NOT read it into your response. Instead, write Python scripts using write_file and run them with bash. This avoids token limits.
 
 STEPS:
-1. bash: node /app/playwright-capture.js "${url}" "${jobDir}" && echo "Captured: $(wc -c < ${jobDir}/page.html) bytes, $(ls ${jobDir}/assets/ | wc -l) assets"
-2. bash: python3 /app/structural-transform.py "${jobDir}" "${url}" && echo "Structural transform OK"
+1. bash: node ${scriptDir}/playwright-capture.js "${url}" "${jobDir}" && echo "Captured: $(wc -c < ${jobDir}/page.html) bytes, $(ls ${jobDir}/assets/ | wc -l) assets"
+2. bash: python3 ${scriptDir}/structural-transform.py "${jobDir}" "${url}" && echo "Structural transform OK"
 3. bash: python3 -c "
 import re
 with open('${jobDir}/page.html','r',errors='ignore') as f: h=f.read()

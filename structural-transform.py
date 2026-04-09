@@ -75,6 +75,11 @@ inline_remove_patterns = [
     r'gtag\s*\(', r'dataLayer\.push', r'fbq\s*\(',
     r'hotjar', r'hj\s*\(',
     r'Intercom\s*\(', r'drift\s*\.',
+    # Redirect/navigation scripts (clones should never redirect away)
+    r'window\.location\s*=', r'window\.location\.href\s*=',
+    r'window\.location\.replace\s*\(', r'window\.location\.assign\s*\(',
+    r'document\.location\s*=', r'location\.href\s*=',
+    r'window\.top\.location', r'top\.location',
 ]
 inline_pattern = '|'.join(inline_remove_patterns)
 
@@ -202,6 +207,40 @@ def fix_lazy(m):
     return tag
 
 html = re.sub(r'<img[^>]+>', fix_lazy, html)
+
+# ── 6. Fix product image gallery display ─────────────────────────────────────
+# Replo/GemPages carousel JS may not init on static clones, causing the hero
+# image to stay at thumbnail size. Inject CSS to force the first carousel slide
+# to display as a large image if we detect a Replo/Shopify carousel.
+gallery_fix_css = '''<style id="clone-gallery-fix">
+/* Force first carousel slide to display as large hero image */
+[class*="carousel"] [aria-label*="Slide 1"],
+[class*="slider"] [aria-label*="Slide 1"],
+[data-slide-index="0"],
+[class*="product__media"] img:first-of-type,
+[class*="product-gallery"] img:first-of-type {
+  width: 100% !important;
+  max-width: 600px !important;
+  height: auto !important;
+  object-fit: contain !important;
+  display: block !important;
+}
+/* Ensure product media container has proper width */
+[class*="product__media"],
+[class*="product-media"],
+[class*="product-gallery"],
+[class*="media-gallery"] {
+  min-width: 50% !important;
+  width: 50% !important;
+}
+/* Remove meta/link redirect tags */
+</style>'''
+
+if '</head>' in html:
+    html = html.replace('</head>', gallery_fix_css + '\n</head>', 1)
+
+# Remove meta refresh redirects
+html = re.sub(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]*>', '', html, flags=re.IGNORECASE)
 
 # ── Safety check ─────────────────────────────────────────────────────────────
 if len(html) < original_len * 0.4:
