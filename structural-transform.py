@@ -36,15 +36,24 @@ html = re.sub(
 )
 
 # ── 2. Replace video containers with poster image or placeholder ──────────────
-# Find downloaded poster/thumbnail image
+# Find downloaded poster/thumbnail image — prefer Wistia thumbnail (real video frame)
+# over playscreen overlay (just the play button UI)
 poster_img = None
 if os.path.exists(assets_dir):
-    for fname in os.listdir(assets_dir):
-        lower = fname.lower()
-        if any(k in lower for k in ('playscreen', 'poster', 'thumbnail', 'video-thumb', 'vidthumb')):
-            if lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
-                poster_img = 'assets/' + fname
-                break
+    fnames = os.listdir(assets_dir)
+    # First try: Wistia API thumbnail (real video frame)
+    for fname in fnames:
+        if fname.startswith('wistia-thumb-') and fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            poster_img = 'assets/' + fname
+            break
+    # Fallback: playscreen/poster images
+    if not poster_img:
+        for fname in fnames:
+            lower = fname.lower()
+            if any(k in lower for k in ('playscreen', 'poster', 'thumbnail', 'video-thumb', 'vidthumb')):
+                if lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                    poster_img = 'assets/' + fname
+                    break
 
 video_placeholder = (
     f'<img src="{poster_img}" style="width:100%;display:block;cursor:pointer;" alt="Video">'

@@ -114,6 +114,46 @@ def fix_lazy(m):
 
 html = re.sub(r'<img[^>]+>', fix_lazy, html)
 
+# ── Download Wistia video thumbnails ──────────────────────────────────────────
+# Wistia loads real thumbnails via JS — they don't appear in the static HTML.
+# Fetch from Wistia embed JSON API and save as 'wistia-thumb-{id}.jpg'.
+import json as _json
+wistia_ids = set(re.findall(r'wistia_async_([a-z0-9]+)', html))
+for wid in wistia_ids:
+    try:
+        thumb_api = f'https://fast.wistia.com/embed/medias/{wid}.json'
+        req = urllib.request.Request(
+            thumb_api,
+            headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.load(resp)
+        # Thumbnail URL is at media.assets[].type=="still_image" or media.thumbnail.url
+        thumb_url = None
+        for asset in data.get('media', {}).get('assets', []):
+            if asset.get('type') in ('still_image', 'thumbnail', 'original_still_image'):
+                thumb_url = asset.get('url')
+                break
+        if not thumb_url:
+            thumb_url = data.get('media', {}).get('thumbnail', {}).get('url')
+        if thumb_url:
+            # Download thumbnail
+            fname = f'wistia-thumb-{wid}.jpg'
+            local = os.path.join(assets_dir, fname)
+            req2 = urllib.request.Request(
+                thumb_url,
+                headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req2, timeout=20) as resp2:
+                data2 = resp2.read()
+            with open(local, 'wb') as f:
+                f.write(data2)
+            print(f'Wistia thumb: {fname}  ({thumb_url[:60]})')
+        else:
+            print(f'Wistia thumb: no URL found for {wid}')
+    except Exception as e:
+        print(f'Wistia thumb SKIP {wid}: {e}')
+
 with open(html_path, 'w', encoding='utf-8') as f:
     f.write(html)
 
