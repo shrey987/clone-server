@@ -87,6 +87,12 @@ wistia_css = f'''<style id="clone-video-fix">
     height: 0 !important;
     overflow: hidden !important;
   }}
+  /* Unhide Wistia mount points (Wistia JS sets display:none on these via JS) */
+  [id^="ekran"] {{
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }}
   /* Show poster placeholder and original thumbnail */
   #video-poster-placeholder, #thumb, img.pulsing {{
     display: block !important;
