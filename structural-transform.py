@@ -118,12 +118,14 @@ html = re.sub(
     unhide_element, html, flags=re.IGNORECASE
 )
 
-# ── 3. Shopify product JSON fallback ─────────────────────────────────────────
-# If broken {{}} img tags remain AND this is a Shopify product page, fetch
-# real product images from /products/{handle}.json and replace in-place.
+# ── 3. Shopify product image injection ───────────────────────────────────────
+# For Shopify product pages: always fetch product images from JSON API and
+# inject a static hero image. This handles both broken {{}} images AND
+# collapsed Replo/GemPages carousels where the image exists but renders tiny.
 broken_img_count = len(re.findall(r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}', html, re.IGNORECASE))
+has_replo_carousel = 'data-replo-component-root="carousel"' in html
 
-if broken_img_count > 0 and '/products/' in base_url:
+if '/products/' in base_url:
     try:
         from urllib.parse import urlparse
         parsed = urlparse(base_url)
@@ -174,8 +176,20 @@ if broken_img_count > 0 and '/products/' in base_url:
                 _replace_broken, html, flags=re.IGNORECASE
             )
             print(f'Replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
+
+        # For Replo carousels that collapsed: inject a static hero image before the carousel
+        if shopify_imgs and has_replo_carousel:
+            hero_src = shopify_imgs[0]
+            hero_html = f'''<div id="clone-hero-fallback" style="width:100%;max-width:600px;margin-bottom:16px;">
+  <img src="{hero_src}" alt="Product" style="width:100%;height:auto;object-fit:contain;display:block;border-radius:8px;" />
+</div>'''
+            # Inject before the first Replo carousel
+            carousel_match = re.search(r'<div[^>]*data-replo-component-root="carousel"', html)
+            if carousel_match:
+                html = html[:carousel_match.start()] + hero_html + '\n' + html[carousel_match.start():]
+                print(f'Injected static hero image before Replo carousel')
     except Exception as e:
-        print(f'Shopify product JSON fallback failed: {e}')
+        print(f'Shopify product image injection failed: {e}')
 
 # ── 4. Template var + UUID cleanup ───────────────────────────────────────────
 # Remove any remaining broken {{}} img tags
