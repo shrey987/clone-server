@@ -105,14 +105,45 @@ elif '<body' in html:
 
 print(f'Popup removal done. Klaviyo refs remaining: {len(re.findall(r"klaviyo", html, re.I))}')
 
-# ── 0b. Strip Replo / page-builder artifacts ─────────────────────────────────
-# Replo (Shopify page builder) can leave unresolved {{template}} vars and
-# UUID strings as visible link/text nodes at the top of the page.
-# Remove img tags that still have unresolved {{...}} in src (broken images)
-html = re.sub(
-    r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
-    '', html, flags=re.IGNORECASE
-)
+# ── 0b. Fix Replo / page-builder artifacts ───────────────────────────────────
+# Replo (Shopify page builder) leaves unresolved {{template}} vars in img tags
+# and UUID strings as visible text. Instead of removing these images, replace
+# them IN-PLACE with real product images from Shopify JSON (preserves layout).
+import json as _json3
+
+# Load Shopify product images if available
+shopify_manifest = os.path.join(job_dir, 'shopify-images.json')
+shopify_imgs = []
+if os.path.exists(shopify_manifest):
+    with open(shopify_manifest) as f:
+        shopify_imgs = _json3.load(f)
+
+# Replace broken {{...}} img tags with real product images in-place
+_spimg_idx = [0]  # mutable counter for closure
+def _replace_broken_img(match):
+    if _spimg_idx[0] < len(shopify_imgs):
+        src = shopify_imgs[_spimg_idx[0]]
+        _spimg_idx[0] += 1
+        return f'<img src="{src}" style="width:100%;height:auto;object-fit:contain;display:block;" alt="Product Image" />'
+    return ''  # no more images available, remove the broken tag
+
+broken_img_count = len(re.findall(r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+    html, flags=re.IGNORECASE))
+
+if shopify_imgs and broken_img_count > 0:
+    html = re.sub(
+        r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+        _replace_broken_img, html, flags=re.IGNORECASE
+    )
+    print(f'Replo: replaced {min(broken_img_count, len(shopify_imgs))} broken imgs with Shopify product images')
+elif broken_img_count > 0:
+    # No Shopify images available, just remove broken tags
+    html = re.sub(
+        r'<img[^>]+src=["\'][^"\']*\{\{[^}]+\}\}[^"\']*["\'][^>]*/?>',
+        '', html, flags=re.IGNORECASE
+    )
+    print(f'Replo: removed {broken_img_count} broken img tags (no Shopify images available)')
+
 # Remove ANY element whose visible text is a bare UUID (Replo component IDs leak as links/text)
 html = re.sub(
     r'<(?:a|span|div|p)[^>]*>\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*</(?:a|span|div|p)>',
@@ -123,62 +154,32 @@ html = re.sub(r'((?:alt|title|aria-label)=["\'])[^"\']*\{\{[^}]+\}\}[^"\']*(["\'
 
 template_var_count = len(re.findall(r'\{\{[^}]+\}\}', html))
 if template_var_count > 0:
-    print(f'WARNING: {template_var_count} unresolved {{{{...}}}} template vars remain after cleanup')
+    print(f'WARNING: {template_var_count} unresolved {{{{...}}}} template vars remain')
 else:
     print('Replo/template var cleanup: clean')
 
-# ── 0c. Inject Shopify product image gallery if product images were downloaded ─
-import json as _json3
-shopify_manifest = os.path.join(job_dir, 'shopify-images.json')
-if os.path.exists(shopify_manifest):
-    with open(shopify_manifest) as f:
-        shopify_imgs = _json3.load(f)
-    if shopify_imgs:
-        # Build a static product gallery with main image + clickable thumbnails
-        thumbs_html = ''
-        for i, img_path in enumerate(shopify_imgs):
-            border = '2px solid #333' if i == 0 else '1px solid #ddd'
-            thumbs_html += (
-                f'<img src="{img_path}" alt="Product {i+1}" '
-                f'style="width:80px;height:80px;object-fit:cover;cursor:pointer;'
-                f'border:{border};border-radius:4px;" '
-                f'onclick="document.getElementById(\'spg-main\').src=this.src;'
-                f'document.querySelectorAll(\'#spg-thumbs img\').forEach(function(i){{i.style.borderColor=\'#ddd\';i.style.borderWidth=\'1px\'}});'
-                f'this.style.borderColor=\'#333\';this.style.borderWidth=\'2px\'" />\n'
-            )
-
+# If Shopify images exist but NO broken {{}} images were found (Replo fully resolved or non-Replo),
+# check if there are NO product images visible at all (empty media column), inject gallery as fallback
+if shopify_imgs and broken_img_count == 0:
+    # Check if any shopify-product images are already referenced in the HTML
+    has_shopify_imgs = 'shopify-product-' in html
+    if not has_shopify_imgs:
+        # Build minimal gallery and inject before h1
+        thumbs_html = ''.join(
+            f'<img src="{p}" alt="Product {i+1}" style="width:80px;height:80px;object-fit:cover;cursor:pointer;border:{("2px solid #333" if i == 0 else "1px solid #ddd")};border-radius:4px;" '
+            f'onclick="document.getElementById(\'spg-main\').src=this.src" />\n'
+            for i, p in enumerate(shopify_imgs)
+        )
         gallery_html = f'''<div id="static-product-gallery" style="width:100%;max-width:600px;padding:0 10px;">
   <div style="width:100%;margin-bottom:12px;background:#f7f7f7;border-radius:8px;overflow:hidden;">
     <img id="spg-main" src="{shopify_imgs[0]}" alt="Product" style="width:100%;max-height:600px;object-fit:contain;display:block;" />
   </div>
-  <div id="spg-thumbs" style="display:flex;gap:8px;flex-wrap:wrap;">
-    {thumbs_html}
-  </div>
+  <div id="spg-thumbs" style="display:flex;gap:8px;flex-wrap:wrap;">{thumbs_html}</div>
 </div>'''
-
-        # Find the product section and inject gallery at the start of the
-        # first product-info/product-media/gallery area.
-        # Strategy: find the main product section (often has class containing 'product')
-        # and inject gallery as first child.
-        injected = False
-
-        # Try: find the <section> or <div> whose class contains "product" and inject
-        product_section = re.search(
-            r'(<(?:section|div|main)[^>]+class=["\'][^"\']*(?:product|ProductPage|product-page|product__media|media-gallery)[^"\']*["\'][^>]*>)',
-            html, re.IGNORECASE
-        )
-        if product_section:
-            insert_point = product_section.end()
-            html = html[:insert_point] + '\n' + gallery_html + '\n' + html[insert_point:]
-            injected = True
-
-        # Fallback: inject just before the product title (h1 containing the product name)
-        if not injected:
-            h1_match = re.search(r'<h1[^>]*>', html)
-            if h1_match:
-                # Find the parent container of the h1 and inject before it
-                html = html[:h1_match.start()] + gallery_html + '\n' + html[h1_match.start():]
-                injected = True
+        h1_match = re.search(r'<h1[^>]*>', html)
+        if h1_match:
+            html = html[:h1_match.start()] + gallery_html + '\n' + html[h1_match.start():]
+            print(f'Shopify gallery fallback injected: {len(shopify_imgs)} images')
 
         if injected:
             print(f'Shopify gallery injected: {len(shopify_imgs)} product images')
