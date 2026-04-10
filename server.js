@@ -278,42 +278,103 @@ print('CTAs:', ctabtns)
 print('Size:', len(h))
 "
 2. bash: ls -la ${jobDir}/uploads/ 2>/dev/null || echo "No uploads"
-3. Based on the page headlines + user's description + uploaded file names, write_file ${jobDir}/brand-transform.py that:
-   - Reads the ENTIRE ${jobDir}/page.html
-   - Makes INTELLIGENT brand substitutions:
-     * Find the original brand/product name (appears repeatedly in headlines) — replace with user's product name throughout
-     * Replace headline copy with user's equivalent messaging
-     * Replace benefit bullet text with user's benefits
-     * Replace CTA button text with user's CTA
-     * For uploaded IMAGE files (.jpg/.jpeg/.png/.webp/.gif/.svg in uploads/):
-       - Use filename as hint: logo.png → find logo img src and replace, hero.jpg → find hero/main img src and replace
-       - Replace matching img src attributes with uploads/FILENAME
-     * For uploaded VIDEO files (.mp4/.mov/.webm in uploads/):
-       - Find the video placeholder: id="video-poster-placeholder" img tag or id="video1" container
-       - Replace with: <video controls style="width:100%;display:block;" playsinline><source src="uploads/FILENAME" type="video/mp4"></video>
-     * If user specified a hex color, find the dominant brand color in inline styles/CSS and replace it
-   - GLOBAL BRAND SWEEP — run this LAST, after all targeted replacements:
-     * From the page headlines you extracted in step 1, identify the original product/brand name (most-repeated proper noun)
-     * Also identify the parent company name if different from the product name
-     * CRITICAL: Do NOT replace brand names inside asset file paths (src="assets/..." attributes). Use a regex that skips src/href attributes:
-       import re
-       def safe_replace(html, old, new):
-           # Replace in text content and non-src attributes only
-           # Split on tags, replace only in text portions
-           parts = re.split(r'(src=["\'][^"\']*["\']|href=["\'][^"\']*["\'])', html)
-           return ''.join(new_text if i % 2 == 0 else new_text for i, new_text in enumerate(
-               part.replace(old, new) if i % 2 == 0 else part for i, part in enumerate(parts)
-           ))
-       h = safe_replace(h, original_brand, user_product_name)
-       h = safe_replace(h, original_brand.lower(), user_product_name.lower())
-     * Use the user's product name from their description. If no product name given, skip the sweep.
-   - COLOR CHANGES: If user specified a hex color, apply it ONLY to:
-     * Button/CTA background-color (find buttons by tag name or class, update inline style)
-     * Badge/label background colors
-     * Do NOT change page background, header, footer, or body colors broadly
-   - Size safety check: if len(h) < original_size * 0.6: raise Exception("Output too small, aborting")
-   - Write complete modified HTML back: open('${jobDir}/page.html','w').write(h)
-   - Print: f"Edit transform done. Size: {len(h)}"
+3. From the page headlines + user's description, determine EXACTLY these values (print each one):
+   - ORIGINAL_BRAND: the brand/company name that appears most in headlines (e.g. "Sondur")
+   - ORIGINAL_PRODUCT: the product name from the h1 (e.g. "Travel Cushion")
+   - NEW_BRAND: the user's brand name from their description (or empty if not specified)
+   - NEW_PRODUCT: the user's product name from their description (or empty if not specified)
+   - NEW_CTA: the user's CTA text (or empty if not specified)
+   - NEW_COLOR: hex color from user's description (or empty if not specified)
+   - ORIGINAL_CTA: the most common CTA button text found in step 1
+
+   Then write_file ${jobDir}/brand-transform.py using this EXACT template, filling in the values:
+
+import re, os
+
+with open('${jobDir}/page.html', 'r', encoding='utf-8', errors='ignore') as f:
+    h = f.read()
+original_len = len(h)
+
+# Safe replace: skips src/href attributes to avoid corrupting asset paths
+def safe_replace(html, old, new):
+    if not old or not new or old == new:
+        return html
+    parts = re.split(r'((?:src|href|srcset|action)=["\\'\\'][^\\'\\'"]*["\\'\\'])', html)
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            result.append(part.replace(old, new))
+        else:
+            result.append(part)
+    return ''.join(result)
+
+# 1. Brand name replacement
+ORIGINAL_BRAND = 'FILL_THIS'  # e.g. "Sondur"
+NEW_BRAND = 'FILL_THIS'  # e.g. "CloudRest"
+if ORIGINAL_BRAND and NEW_BRAND:
+    h = safe_replace(h, ORIGINAL_BRAND, NEW_BRAND)
+    h = safe_replace(h, ORIGINAL_BRAND.lower(), NEW_BRAND.lower())
+    h = safe_replace(h, ORIGINAL_BRAND.upper(), NEW_BRAND.upper())
+    print(f'Brand: {ORIGINAL_BRAND} -> {NEW_BRAND}')
+
+# 2. Product name replacement
+ORIGINAL_PRODUCT = 'FILL_THIS'  # e.g. "Travel Cushion"
+NEW_PRODUCT = 'FILL_THIS'  # e.g. "CloudRest Pro"
+if ORIGINAL_PRODUCT and NEW_PRODUCT:
+    h = safe_replace(h, ORIGINAL_PRODUCT, NEW_PRODUCT)
+    h = safe_replace(h, ORIGINAL_PRODUCT.lower(), NEW_PRODUCT.lower())
+    print(f'Product: {ORIGINAL_PRODUCT} -> {NEW_PRODUCT}')
+
+# 3. CTA button text replacement
+ORIGINAL_CTA = 'FILL_THIS'  # e.g. "ADD TO CART"
+NEW_CTA = 'FILL_THIS'  # e.g. "Buy CloudRest Pro Now"
+if ORIGINAL_CTA and NEW_CTA:
+    h = h.replace(ORIGINAL_CTA, NEW_CTA)
+    h = h.replace(ORIGINAL_CTA.lower(), NEW_CTA)
+    h = h.replace(ORIGINAL_CTA.title(), NEW_CTA)
+    print(f'CTA: {ORIGINAL_CTA} -> {NEW_CTA}')
+
+# 4. Button color change (ONLY buttons, not page background)
+NEW_COLOR = 'FILL_THIS'  # e.g. "#FF6B35" or empty
+if NEW_COLOR and NEW_COLOR.startswith('#'):
+    # Add inline style to button/a elements that look like CTAs
+    def recolor_button(m):
+        tag = m.group(0)
+        if 'style="' in tag:
+            tag = re.sub(r'background-color:\s*[^;]+;?', f'background-color:{NEW_COLOR};', tag)
+            if f'background-color:{NEW_COLOR}' not in tag:
+                tag = tag.replace('style="', f'style="background-color:{NEW_COLOR};')
+        else:
+            tag = tag.replace('>', f' style="background-color:{NEW_COLOR};color:white;">', 1)
+        return tag
+    h = re.sub(r'<(?:a|button)[^>]*class=["\\'\\'][^\\'\\'"]*(?:btn|button|cta|add-to-cart|checkout)[^\\'\\'"]*["\\'\\'][^>]*>', recolor_button, h, flags=re.I)
+    print(f'Color: buttons -> {NEW_COLOR}')
+
+# 5. Uploaded file replacements
+uploads_dir = '${jobDir}/uploads'
+if os.path.exists(uploads_dir):
+    for fname in os.listdir(uploads_dir):
+        ext = fname.lower().split('.')[-1]
+        if ext in ('jpg','jpeg','png','webp','gif','svg'):
+            # Logo detection
+            if 'logo' in fname.lower():
+                h = re.sub(r'(<img[^>]+class=["\\'\\'][^\\'\\'"]*logo[^\\'\\'"]*["\\'\\'][^>]*src=["\\'\\'])([^\\'\\'"]+)(["\\'\\'])', f'\\\\1uploads/{fname}\\\\3', h, flags=re.I)
+                print(f'Logo replaced with uploads/{fname}')
+        elif ext in ('mp4','mov','webm'):
+            h = re.sub(r'<img[^>]*id=["\\'\\']video-poster-placeholder["\\'\\'][^>]*/?>',
+                f'<video controls style="width:100%;display:block;" playsinline><source src="uploads/{fname}" type="video/mp4"></video>', h, flags=re.I)
+            print(f'Video replaced with uploads/{fname}')
+
+# Safety check
+if len(h) < original_len * 0.5:
+    raise Exception(f'Output too small: {len(h)} vs {original_len}')
+
+with open('${jobDir}/page.html', 'w', encoding='utf-8') as f:
+    f.write(h)
+print(f'Edit transform done. Size: {len(h)} ({len(h)/original_len:.0%})')
+
+   CRITICAL: Replace ALL the 'FILL_THIS' values with the actual detected values from step 1. If a value is not applicable, set it to empty string ''.
+
 4. bash: python3 ${jobDir}/brand-transform.py && echo "Edit transform OK"
 5. bash: mkdir -p ${jobDir}/${projectName} && cp ${jobDir}/page.html ${jobDir}/${projectName}/index.html && cp -r ${jobDir}/assets ${jobDir}/${projectName}/assets 2>/dev/null || true && cp -r ${jobDir}/uploads ${jobDir}/${projectName}/uploads 2>/dev/null || true && echo "Files copied"
 6. write_file: ${jobDir}/${projectName}/vercel.json with content: {"version":2}
