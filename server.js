@@ -295,12 +295,22 @@ print('Size:', len(h))
    - GLOBAL BRAND SWEEP — run this LAST, after all targeted replacements:
      * From the page headlines you extracted in step 1, identify the original product/brand name (most-repeated proper noun)
      * Also identify the parent company name if different from the product name
-     * Replace EVERY occurrence throughout the entire HTML (catches testimonials, FAQ, guarantee, body copy):
-       original_brand = 'K9 Soothe'  # replace with what you detected
-       h = h.replace(original_brand, user_product_name)
-       h = h.replace(original_brand.lower(), user_product_name.lower())
-       # Repeat for parent company name if found
+     * CRITICAL: Do NOT replace brand names inside asset file paths (src="assets/..." attributes). Use a regex that skips src/href attributes:
+       import re
+       def safe_replace(html, old, new):
+           # Replace in text content and non-src attributes only
+           # Split on tags, replace only in text portions
+           parts = re.split(r'(src=["\'][^"\']*["\']|href=["\'][^"\']*["\'])', html)
+           return ''.join(new_text if i % 2 == 0 else new_text for i, new_text in enumerate(
+               part.replace(old, new) if i % 2 == 0 else part for i, part in enumerate(parts)
+           ))
+       h = safe_replace(h, original_brand, user_product_name)
+       h = safe_replace(h, original_brand.lower(), user_product_name.lower())
      * Use the user's product name from their description. If no product name given, skip the sweep.
+   - COLOR CHANGES: If user specified a hex color, apply it ONLY to:
+     * Button/CTA background-color (find buttons by tag name or class, update inline style)
+     * Badge/label background colors
+     * Do NOT change page background, header, footer, or body colors broadly
    - Size safety check: if len(h) < original_size * 0.6: raise Exception("Output too small, aborting")
    - Write complete modified HTML back: open('${jobDir}/page.html','w').write(h)
    - Print: f"Edit transform done. Size: {len(h)}"
