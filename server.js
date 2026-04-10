@@ -295,44 +295,92 @@ with open('${jobDir}/page.html', 'r', encoding='utf-8', errors='ignore') as f:
     h = f.read()
 original_len = len(h)
 
-# Safe replace: skips src/href attributes to avoid corrupting asset paths
+# Safe replace: only protects local asset file paths (assets/...), replaces EVERYWHERE else
 def safe_replace(html, old, new):
     if not old or not new or old == new:
         return html
-    parts = re.split(r'((?:src|href|srcset|action)=["\\'\\'][^\\'\\'"]*["\\'\\'])', html)
+    # Protect only local asset paths — these contain hashed filenames that must not be renamed
+    parts = re.split(r'((?:src|href|srcset)=["\\'\\'][^\\'\\'"]*assets/[^\\'\\'"]*["\\'\\'])', html)
     result = []
     for i, part in enumerate(parts):
         if i % 2 == 0:
+            # Not an asset path — replace freely (text, alt attrs, titles, links, everything)
             result.append(part.replace(old, new))
         else:
+            # Asset path — don't touch
             result.append(part)
     return ''.join(result)
 
-# 1. Brand name replacement
+# 1. Brand name replacement — catches ALL variations
 ORIGINAL_BRAND = 'FILL_THIS'  # e.g. "Sondur"
 NEW_BRAND = 'FILL_THIS'  # e.g. "CloudRest"
 if ORIGINAL_BRAND and NEW_BRAND:
     h = safe_replace(h, ORIGINAL_BRAND, NEW_BRAND)
     h = safe_replace(h, ORIGINAL_BRAND.lower(), NEW_BRAND.lower())
     h = safe_replace(h, ORIGINAL_BRAND.upper(), NEW_BRAND.upper())
-    print(f'Brand: {ORIGINAL_BRAND} -> {NEW_BRAND}')
+    h = safe_replace(h, ORIGINAL_BRAND.title(), NEW_BRAND.title())
+    # Also catch the brand in URLs (e.g. nobltravel.com -> skycomforttravel.com)
+    h = safe_replace(h, ORIGINAL_BRAND.lower() + 'travel', NEW_BRAND.lower() + 'travel')
+    count = h.count(ORIGINAL_BRAND) + h.count(ORIGINAL_BRAND.lower()) + h.count(ORIGINAL_BRAND.upper())
+    print(f'Brand: {ORIGINAL_BRAND} -> {NEW_BRAND} (remaining refs: {count})')
 
-# 2. Product name replacement
+# 2. Product name replacement — all case variations
 ORIGINAL_PRODUCT = 'FILL_THIS'  # e.g. "Travel Cushion"
 NEW_PRODUCT = 'FILL_THIS'  # e.g. "CloudRest Pro"
 if ORIGINAL_PRODUCT and NEW_PRODUCT:
     h = safe_replace(h, ORIGINAL_PRODUCT, NEW_PRODUCT)
     h = safe_replace(h, ORIGINAL_PRODUCT.lower(), NEW_PRODUCT.lower())
-    print(f'Product: {ORIGINAL_PRODUCT} -> {NEW_PRODUCT}')
+    h = safe_replace(h, ORIGINAL_PRODUCT.upper(), NEW_PRODUCT.upper())
+    h = safe_replace(h, ORIGINAL_PRODUCT.title(), NEW_PRODUCT.title())
+    # Handle hyphenated/slug versions (carry-on-all-in-one -> skycomfort-elite)
+    orig_slug = ORIGINAL_PRODUCT.lower().replace(' ', '-')
+    new_slug = NEW_PRODUCT.lower().replace(' ', '-')
+    if orig_slug != ORIGINAL_PRODUCT.lower():
+        h = safe_replace(h, orig_slug, new_slug)
+    count = h.count(ORIGINAL_PRODUCT) + h.count(ORIGINAL_PRODUCT.lower())
+    print(f'Product: {ORIGINAL_PRODUCT} -> {NEW_PRODUCT} (remaining refs: {count})')
 
-# 3. CTA button text replacement
+# 3. CTA button text replacement — all case variations
 ORIGINAL_CTA = 'FILL_THIS'  # e.g. "ADD TO CART"
 NEW_CTA = 'FILL_THIS'  # e.g. "Buy CloudRest Pro Now"
 if ORIGINAL_CTA and NEW_CTA:
     h = h.replace(ORIGINAL_CTA, NEW_CTA)
     h = h.replace(ORIGINAL_CTA.lower(), NEW_CTA)
+    h = h.replace(ORIGINAL_CTA.upper(), NEW_CTA)
     h = h.replace(ORIGINAL_CTA.title(), NEW_CTA)
+    # Also catch common CTA variants
+    for variant in ['Add to Cart', 'ADD TO CART', 'Add To Cart', 'Buy Now', 'BUY NOW', 'Shop Now', 'SHOP NOW', 'Order Now', 'ORDER NOW']:
+        if variant.lower() != NEW_CTA.lower():
+            h = h.replace(variant, NEW_CTA)
     print(f'CTA: {ORIGINAL_CTA} -> {NEW_CTA}')
+
+# 3b. Final brand sweep — catch ANYTHING remaining
+# Run one more pass with plain string replacement on ALL text (not safe_replace)
+# This catches compound words like "NoblY-Strap", "AboutNobl", footer links, etc.
+if ORIGINAL_BRAND and NEW_BRAND:
+    # Only replace in text nodes and attribute values, not in asset filenames
+    remaining_before = h.lower().count(ORIGINAL_BRAND.lower())
+    if remaining_before > 0:
+        # Aggressive pass: replace everywhere EXCEPT inside assets/ paths
+        lines = h.split('\\n')
+        for i, line in enumerate(lines):
+            if 'assets/' not in line:
+                lines[i] = line.replace(ORIGINAL_BRAND, NEW_BRAND)
+                lines[i] = lines[i].replace(ORIGINAL_BRAND.lower(), NEW_BRAND.lower())
+                lines[i] = lines[i].replace(ORIGINAL_BRAND.upper(), NEW_BRAND.upper())
+                lines[i] = lines[i].replace(ORIGINAL_BRAND.title(), NEW_BRAND.title())
+            else:
+                # Line has asset path, only replace outside the src/href attribute
+                parts = re.split(r'(assets/[^"\\'\\'\\s>]+)', lines[i])
+                for j in range(len(parts)):
+                    if j % 2 == 0:
+                        parts[j] = parts[j].replace(ORIGINAL_BRAND, NEW_BRAND)
+                        parts[j] = parts[j].replace(ORIGINAL_BRAND.lower(), NEW_BRAND.lower())
+                        parts[j] = parts[j].replace(ORIGINAL_BRAND.upper(), NEW_BRAND.upper())
+                lines[i] = ''.join(parts)
+        h = '\\n'.join(lines)
+        remaining_after = h.lower().count(ORIGINAL_BRAND.lower())
+        print(f'Final sweep: {remaining_before} -> {remaining_after} remaining brand refs')
 
 # 4. Button color change (ONLY buttons, not page background)
 NEW_COLOR = 'FILL_THIS'  # e.g. "#FF6B35" or empty
