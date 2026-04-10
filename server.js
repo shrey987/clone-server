@@ -347,7 +347,14 @@ if NEW_COLOR and NEW_COLOR.startswith('#'):
         else:
             tag = tag.replace('>', f' style="background-color:{NEW_COLOR};color:white;">', 1)
         return tag
-    h = re.sub(r'<(?:a|button)[^>]*class=["\\'\\'][^\\'\\'"]*(?:btn|button|cta|add-to-cart|checkout)[^\\'\\'"]*["\\'\\'][^>]*>', recolor_button, h, flags=re.I)
+    # Match buttons by: class containing btn/button/cta/cart, OR any <button> tag, OR links with CTA text
+    h = re.sub(r'<(?:a|button)[^>]*class=["\\'\\'][^\\'\\'"]*(?:btn|button|cta|add-to-cart|checkout|product-form|shopify-payment)[^\\'\\'"]*["\\'\\'][^>]*>', recolor_button, h, flags=re.I)
+    # Also catch ALL <button> tags (most are CTAs)
+    h = re.sub(r'<button[^>]*>', recolor_button, h, flags=re.I)
+    # Inject a CSS rule as the most reliable approach
+    color_css = f'<style id="clone-color-override">button, .btn, [class*="button"], [class*="cart"], [class*="cta"], input[type="submit"] {{ background-color: {NEW_COLOR} !important; }}</style>'
+    if '</head>' in h:
+        h = h.replace('</head>', color_css + '\\n</head>', 1)
     print(f'Color: buttons -> {NEW_COLOR}')
 
 # 5. Uploaded file replacements
