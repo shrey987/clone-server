@@ -448,6 +448,27 @@ app.post('/edit', async (req, res) => {
     fs.writeFileSync(`${jobDir}/page.html`, html, 'utf8');
     console.log(`[${jobId}] Fetched HTML: ${html.length} bytes`);
 
+    // Download all assets from the existing clone
+    const assetRefs = [...new Set(html.match(/assets\/[^\s"'<>]+/g) || [])];
+    console.log(`[${jobId}] Downloading ${assetRefs.length} assets from existing clone...`);
+    let downloaded = 0;
+    for (const assetPath of assetRefs) {
+      const cleanPath = assetPath.split('"')[0].split("'")[0].split(')')[0];
+      const assetUrl = `${cloneUrl}/${cleanPath}`;
+      const localPath = path.join(jobDir, cleanPath);
+      try {
+        const resp = await fetch(assetUrl);
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (buf.length > 0) {
+            fs.writeFileSync(localPath, buf);
+            downloaded++;
+          }
+        }
+      } catch (e) { /* skip failed assets */ }
+    }
+    console.log(`[${jobId}] Downloaded ${downloaded}/${assetRefs.length} assets`);
+
     const vercelToken = process.env.VERCEL_TOKEN;
     const deployedUrl = await runEditAgent(jobDir, cloneUrl, projectName, description, vercelToken, jobId);
 
