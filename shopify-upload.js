@@ -1,10 +1,11 @@
 /**
- * shopify-upload.js v2
- * Creates a Shopify page from a cloned landing page.
- * Assets stay on Vercel (fast CDN). Only the HTML goes to Shopify.
+ * shopify-upload.js v3
+ * Uploads a FULLY EDITABLE clone to Shopify.
+ * Assets go to theme assets (fast PUT, no staged upload).
+ * HTML goes into a custom .liquid template (no 512KB limit).
+ * Creates a page using that template.
  *
- * Usage: node shopify-upload.js <jobDir> <pageName> <vercelUrl>
- *   vercelUrl = the Vercel deployment URL where assets are hosted
+ * Usage: node shopify-upload.js <jobDir> <pageName>
  *   Requires env vars: SHOPIFY_STORE, SHOPIFY_ACCESS_TOKEN
  */
 
@@ -14,16 +15,16 @@ const https = require('https');
 
 const jobDir = process.argv[2];
 const pageName = process.argv[3] || 'cloned-page';
-const vercelUrl = process.argv[4] || '';
 
 const STORE = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 
 if (!jobDir || !STORE || !TOKEN) {
-  console.error('Usage: SHOPIFY_STORE=x SHOPIFY_ACCESS_TOKEN=x node shopify-upload.js <jobDir> <pageName> [vercelUrl]');
+  console.error('Usage: SHOPIFY_STORE=x SHOPIFY_ACCESS_TOKEN=x node shopify-upload.js <jobDir> <pageName>');
   process.exit(1);
 }
 
+const assetsDir = path.join(jobDir, 'assets');
 const htmlPath = path.join(jobDir, 'page.html');
 
 function shopifyRequest(method, endpoint, data) {
@@ -53,84 +54,104 @@ function shopifyRequest(method, endpoint, data) {
     });
 
     req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')); });
+    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Request timeout')); });
     if (body) req.write(body);
     req.end();
   });
 }
 
 (async () => {
-  console.log(`Creating Shopify page on ${STORE}...`);
+  console.log(`Uploading full clone to Shopify (${STORE})...`);
 
-  let html = fs.readFileSync(htmlPath, 'utf8');
-
-  // If Vercel URL provided, rewrite local asset paths to Vercel CDN
-  if (vercelUrl) {
-    html = html.replace(/assets\//g, `${vercelUrl}/assets/`);
-    console.log(`Asset URLs rewritten to ${vercelUrl}/assets/`);
-  }
-
-  // Get active theme
+  // 1. Get active theme
   const themesResp = await shopifyRequest('GET', '/admin/api/2024-01/themes.json');
   const activeTheme = themesResp.data.themes.find(t => t.role === 'main');
-  if (!activeTheme) {
-    console.error('No active theme found');
-    process.exit(1);
-  }
-  console.log(`Active theme: ${activeTheme.name} (${activeTheme.id})`);
+  if (!activeTheme) { console.error('No active theme'); process.exit(1); }
+  const THEME_ID = activeTheme.id;
+  console.log(`Theme: ${activeTheme.name} (${THEME_ID})`);
 
-  // Create a custom page template (renders raw HTML, no Shopify theme wrapper)
-  const templateSuffix = `clone-${pageName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-  const templateKey = `templates/page.${templateSuffix}.liquid`;
-  const templateContent = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ page.title }}</title>
-</head>
-<body>
-  {{ page.content }}
-</body>
-</html>`;
+  // 2. Upload all assets to theme assets (base64 PUT, fast)
+  let html = fs.readFileSync(htmlPath, 'utf8');
+  const assetFiles = fs.existsSync(assetsDir) ? fs.readdirSync(assetsDir).filter(f => {
+    const stat = fs.statSync(path.join(assetsDir, f));
+    return !stat.isDirectory() && stat.size > 0 && stat.size < 20 * 1024 * 1024; // skip files > 20MB
+  }) : [];
+
+  console.log(`Uploading ${assetFiles.length} assets to theme...`);
+  const assetUrlMap = {};
+  let uploaded = 0;
+  let failed = 0;
+
+  // Upload in batches of 5 (Shopify rate limit is 2 req/sec for assets)
+  const BATCH_SIZE = 2;
+  for (let i = 0; i < assetFiles.length; i += BATCH_SIZE) {
+    const batch = assetFiles.slice(i, i + BATCH_SIZE);
+    const promises = batch.map(async (file) => {
+      const localPath = path.join(assetsDir, file);
+      const assetKey = `assets/clone-${pageName}-${file}`;
+      try {
+        const b64 = fs.readFileSync(localPath).toString('base64');
+        const resp = await shopifyRequest('PUT',
+          `/admin/api/2024-01/themes/${THEME_ID}/assets.json`,
+          { asset: { key: assetKey, attachment: b64 } }
+        );
+        if (resp.data?.asset?.public_url) {
+          assetUrlMap[`assets/${file}`] = resp.data.asset.public_url;
+          uploaded++;
+        } else {
+          failed++;
+        }
+      } catch (e) {
+        failed++;
+      }
+    });
+    await Promise.all(promises);
+
+    if ((uploaded + failed) % 20 === 0 || i + BATCH_SIZE >= assetFiles.length) {
+      console.log(`  Progress: ${uploaded} uploaded, ${failed} failed / ${assetFiles.length} total`);
+    }
+
+    // Rate limit: wait 1 second between batches
+    if (i + BATCH_SIZE < assetFiles.length) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  console.log(`Assets: ${uploaded} uploaded, ${failed} failed`);
+
+  // 3. Rewrite HTML asset paths to Shopify CDN URLs
+  const sortedPaths = Object.keys(assetUrlMap).sort((a, b) => b.length - a.length);
+  for (const localPath of sortedPaths) {
+    html = html.split(localPath).join(assetUrlMap[localPath]);
+  }
+
+  // 4. Create the full HTML as a .liquid template in the theme (NO size limit)
+  // Wrap in a Liquid template that bypasses the theme layout
+  const templateContent = html;
+  const templateKey = `templates/page.clone-${pageName}.liquid`;
 
   const templateResp = await shopifyRequest('PUT',
-    `/admin/api/2024-01/themes/${activeTheme.id}/assets.json`,
+    `/admin/api/2024-01/themes/${THEME_ID}/assets.json`,
     { asset: { key: templateKey, value: templateContent } }
   );
 
   if (templateResp.status >= 400) {
-    console.log('Custom template creation failed, using default page template');
-  } else {
-    console.log(`Created template: ${templateKey}`);
+    console.error('Template creation failed:', JSON.stringify(templateResp.data).slice(0, 300));
+    process.exit(1);
   }
+  console.log(`Template created: ${templateKey} (${(html.length/1024).toFixed(0)}KB)`);
 
-  // Create the Shopify page via GraphQL (REST requires write_content scope, GraphQL works with write_online_store_pages)
+  // 5. Create a Shopify page that uses this template (body can be empty, template has the content)
   const slug = pageName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
 
-  // Check HTML size. Shopify has a 512KB limit on page body.
-  // If HTML is too large, use an iframe pointing to the Vercel clone instead.
-  let bodyHtml;
-  if (html.length > 400000) {
-    // Too large for Shopify page body. Use iframe to Vercel.
-    const iframeUrl = vercelUrl || `https://clone-${pageName}.vercel.app`;
-    bodyHtml = `<div style="width:100%;min-height:100vh;"><iframe src="${iframeUrl}" style="width:100%;height:100vh;border:none;" allowfullscreen></iframe></div>`;
-    console.log(`HTML too large (${(html.length/1024).toFixed(0)}KB > 400KB). Using iframe to ${iframeUrl}`);
-  } else {
-    bodyHtml = html;
-  }
-
-  // Escape HTML for GraphQL string
-  const escapedHtml = bodyHtml.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-
-  const gqlBody = JSON.stringify({
+  // Use GraphQL (works with write_online_store_pages scope)
+  const gqlResp = await shopifyRequest('POST', '/admin/api/2024-01/graphql.json', {
     query: `mutation {
       pageCreate(page: {
         title: "${pageName.replace(/"/g, '\\"')}"
         handle: "${slug}"
-        body: "${escapedHtml}"
+        body: "<p>This page uses a custom template. Edit the template in Online Store > Themes > Edit code > Templates > page.clone-${pageName}.liquid</p>"
         isPublished: true
-        ${templateResp.status < 400 ? `templateSuffix: "${templateSuffix}"` : ''}
+        templateSuffix: "clone-${pageName}"
       }) {
         page { id handle title }
         userErrors { field message }
@@ -138,37 +159,29 @@ function shopifyRequest(method, endpoint, data) {
     }`
   });
 
-  const gqlResp = await shopifyRequest('POST', '/admin/api/2024-01/graphql.json', JSON.parse(gqlBody));
   const pageData = gqlResp.data?.data?.pageCreate;
-
   if (pageData?.userErrors?.length > 0) {
-    console.error('Page creation errors:', JSON.stringify(pageData.userErrors));
-    // Retry without template
-    const retryBody = JSON.stringify({
-      query: `mutation { pageCreate(page: { title: "${pageName.replace(/"/g, '\\"')}", handle: "${slug}", body: "${escapedHtml}", isPublished: true }) { page { id handle } userErrors { field message } } }`
-    });
-    const retryResp = await shopifyRequest('POST', '/admin/api/2024-01/graphql.json', JSON.parse(retryBody));
-    if (retryResp.data?.data?.pageCreate?.userErrors?.length > 0) {
-      console.error('Page creation failed:', JSON.stringify(retryResp.data.data.pageCreate.userErrors));
-      process.exit(1);
-    }
+    console.error('Page errors:', JSON.stringify(pageData.userErrors));
   }
 
   const gid = pageData?.page?.id || '';
   const pageId = gid.split('/').pop();
   const storeSlug = STORE.split('.')[0];
 
-  // Get the store's primary domain for the public URL
+  // Get store domain
   const shopResp = await shopifyRequest('GET', '/admin/api/2024-01/shop.json');
   const domain = shopResp.data?.shop?.domain || `${storeSlug}.myshopify.com`;
 
   const pageUrl = `https://${domain}/pages/${slug}`;
   const adminUrl = `https://admin.shopify.com/store/${storeSlug}/pages/${pageId}`;
+  const editUrl = `https://admin.shopify.com/store/${storeSlug}/themes/${THEME_ID}/editor?template=page.clone-${pageName}`;
 
   console.log(`Page live: ${pageUrl}`);
-  console.log(`Edit in Shopify: ${adminUrl}`);
+  console.log(`Admin: ${adminUrl}`);
+  console.log(`Edit template: ${editUrl}`);
   console.log(`SHOPIFY_PAGE_URL=${pageUrl}`);
   console.log(`SHOPIFY_ADMIN_URL=${adminUrl}`);
+  console.log(`SHOPIFY_EDIT_URL=${editUrl}`);
 })().catch(err => {
   console.error('Upload error:', err.message);
   process.exit(1);
