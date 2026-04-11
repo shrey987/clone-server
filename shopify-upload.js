@@ -108,8 +108,20 @@ function shopifyRequest(method, endpoint, data) {
   // Create the Shopify page via GraphQL (REST requires write_content scope, GraphQL works with write_online_store_pages)
   const slug = pageName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
 
+  // Check HTML size. Shopify has a 512KB limit on page body.
+  // If HTML is too large, use an iframe pointing to the Vercel clone instead.
+  let bodyHtml;
+  if (html.length > 400000) {
+    // Too large for Shopify page body. Use iframe to Vercel.
+    const iframeUrl = vercelUrl || `https://clone-${pageName}.vercel.app`;
+    bodyHtml = `<div style="width:100%;min-height:100vh;"><iframe src="${iframeUrl}" style="width:100%;height:100vh;border:none;" allowfullscreen></iframe></div>`;
+    console.log(`HTML too large (${(html.length/1024).toFixed(0)}KB > 400KB). Using iframe to ${iframeUrl}`);
+  } else {
+    bodyHtml = html;
+  }
+
   // Escape HTML for GraphQL string
-  const escapedHtml = html.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  const escapedHtml = bodyHtml.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 
   const gqlBody = JSON.stringify({
     query: `mutation {
