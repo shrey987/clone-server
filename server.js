@@ -132,11 +132,8 @@ The script must:
    - Print: f"Brand transform done. Size: {len(h)}"
 
 Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK"` : `bash: echo "No brand changes requested — skipping brand transform"`}
-5. bash: mkdir -p ${jobDir}/clone-${jobId.slice(0,8)} && cp ${jobDir}/page.html ${jobDir}/clone-${jobId.slice(0,8)}/index.html && cp -r ${jobDir}/assets ${jobDir}/clone-${jobId.slice(0,8)}/assets && cp -r ${jobDir}/uploads ${jobDir}/clone-${jobId.slice(0,8)}/uploads 2>/dev/null || true
-6. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
-7. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --token ${vercelToken})
-8. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
-9. When step 8 says "SSO removed", output: TASK_COMPLETE`;
+5. bash: SHOPIFY_STORE="${process.env.SHOPIFY_STORE || ''}" SHOPIFY_ACCESS_TOKEN="${process.env.SHOPIFY_ACCESS_TOKEN || ''}" node ${scriptDir}/shopify-upload.js "${jobDir}" "clone-${jobId.slice(0,8)}"
+6. When step 5 prints "SHOPIFY_PAGE_URL=", output: TASK_COMPLETE`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
@@ -196,13 +193,24 @@ Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK
     }
   }
 
-  // Always derive URL from known project name (deterministic, avoids agent URL parsing issues)
-  const projectName = `clone-${jobId.slice(0,8)}`;
-  const projectUrl = `https://${projectName}.vercel.app`;
-  const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
-  if (check && check.status < 400) {
-    deployedUrl = projectUrl;
-    console.log(`[Agent] Verified project URL: ${deployedUrl}`);
+  // Extract Shopify page URL from agent output
+  const allText = messages.map(m =>
+    Array.isArray(m.content) ? m.content.map(b => b.type === 'tool_result' ? (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) : '').join('') : ''
+  ).join('\n');
+
+  const shopifyMatch = allText.match(/SHOPIFY_PAGE_URL=(\S+)/);
+  if (shopifyMatch) {
+    deployedUrl = shopifyMatch[1];
+    console.log(`[Agent] Shopify page URL: ${deployedUrl}`);
+  } else {
+    // Fallback: try Vercel URL
+    const projectName = `clone-${jobId.slice(0,8)}`;
+    const projectUrl = `https://${projectName}.vercel.app`;
+    const check = await fetch(projectUrl, { method: 'HEAD' }).catch(() => null);
+    if (check && check.status < 400) {
+      deployedUrl = projectUrl;
+      console.log(`[Agent] Fallback Vercel URL: ${deployedUrl}`);
+    }
   }
 
   return deployedUrl;
