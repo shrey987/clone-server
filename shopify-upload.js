@@ -105,55 +105,45 @@ function shopifyRequest(method, endpoint, data) {
     console.log(`Created template: ${templateKey}`);
   }
 
-  // Create the Shopify page
+  // Create the Shopify page via GraphQL (REST requires write_content scope, GraphQL works with write_online_store_pages)
   const slug = pageName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
 
-  // Check if page already exists with this handle
-  const existingResp = await shopifyRequest('GET', `/admin/api/2024-01/pages.json?handle=${slug}`);
-  const existingPage = existingResp.data?.pages?.[0];
+  // Escape HTML for GraphQL string
+  const escapedHtml = html.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 
-  let pageResp;
-  if (existingPage) {
-    // Update existing page
-    pageResp = await shopifyRequest('PUT', `/admin/api/2024-01/pages/${existingPage.id}.json`, {
-      page: {
-        id: existingPage.id,
-        body_html: html,
-        template_suffix: templateResp.status < 400 ? templateSuffix : undefined,
+  const gqlBody = JSON.stringify({
+    query: `mutation {
+      pageCreate(page: {
+        title: "${pageName.replace(/"/g, '\\"')}"
+        handle: "${slug}"
+        body: "${escapedHtml}"
+        isPublished: true
+        ${templateResp.status < 400 ? `templateSuffix: "${templateSuffix}"` : ''}
+      }) {
+        page { id handle title }
+        userErrors { field message }
       }
+    }`
+  });
+
+  const gqlResp = await shopifyRequest('POST', '/admin/api/2024-01/graphql.json', JSON.parse(gqlBody));
+  const pageData = gqlResp.data?.data?.pageCreate;
+
+  if (pageData?.userErrors?.length > 0) {
+    console.error('Page creation errors:', JSON.stringify(pageData.userErrors));
+    // Retry without template
+    const retryBody = JSON.stringify({
+      query: `mutation { pageCreate(page: { title: "${pageName.replace(/"/g, '\\"')}", handle: "${slug}", body: "${escapedHtml}", isPublished: true }) { page { id handle } userErrors { field message } } }`
     });
-    console.log(`Updated existing page: ${existingPage.id}`);
-  } else {
-    // Create new page
-    pageResp = await shopifyRequest('POST', '/admin/api/2024-01/pages.json', {
-      page: {
-        title: pageName,
-        handle: slug,
-        body_html: html,
-        template_suffix: templateResp.status < 400 ? templateSuffix : undefined,
-        published: true,
-      }
-    });
+    const retryResp = await shopifyRequest('POST', '/admin/api/2024-01/graphql.json', JSON.parse(retryBody));
+    if (retryResp.data?.data?.pageCreate?.userErrors?.length > 0) {
+      console.error('Page creation failed:', JSON.stringify(retryResp.data.data.pageCreate.userErrors));
+      process.exit(1);
+    }
   }
 
-  if (pageResp.status >= 400) {
-    // Retry without template suffix
-    pageResp = await shopifyRequest('POST', '/admin/api/2024-01/pages.json', {
-      page: {
-        title: pageName,
-        handle: slug,
-        body_html: html,
-        published: true,
-      }
-    });
-  }
-
-  if (pageResp.status >= 400) {
-    console.error('Page creation failed:', JSON.stringify(pageResp.data).slice(0, 500));
-    process.exit(1);
-  }
-
-  const pageId = pageResp.data?.page?.id || existingPage?.id;
+  const gid = pageData?.page?.id || '';
+  const pageId = gid.split('/').pop();
   const storeSlug = STORE.split('.')[0];
 
   // Get the store's primary domain for the public URL
