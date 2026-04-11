@@ -282,7 +282,12 @@ function shopifyDelete(endpoint) {
     process.exit(1);
   }
 
-  // 8. Create JSON template referencing all sections
+  // 8. Delete any old .liquid template with the same name (prevents filename collision)
+  try {
+    await shopifyDelete(`/admin/api/2024-01/themes/${THEME}/assets.json?asset%5Bkey%5D=templates%2Fpage.clone-${pageName}.liquid`);
+  } catch {}
+
+  // Create JSON template referencing all sections
   const templateData = {
     layout: 'clone',
     sections: {},
