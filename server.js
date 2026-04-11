@@ -136,8 +136,7 @@ Then run: bash: python3 ${jobDir}/brand-transform.py && echo "Brand transform OK
 6. write_file: ${jobDir}/clone-${jobId.slice(0,8)}/vercel.json with content: {"version":2}
 7. bash: cd ${jobDir}/clone-${jobId.slice(0,8)} && vercel deploy --prod --yes --scope grrow --token ${vercelToken} || (sleep 15 && vercel deploy --prod --yes --scope grrow --token ${vercelToken})
 8. bash: curl -s -X PATCH "https://api.vercel.com/v9/projects/clone-${jobId.slice(0,8)}?slug=grrow" -H "Authorization: Bearer ${vercelToken}" -H "Content-Type: application/json" -d '{"ssoProtection":null}' && echo "SSO removed"
-9. bash: SHOPIFY_STORE="${process.env.SHOPIFY_STORE || ''}" SHOPIFY_ACCESS_TOKEN="${process.env.SHOPIFY_ACCESS_TOKEN || ''}" node ${scriptDir}/shopify-upload.js "${jobDir}" "clone-${jobId.slice(0,8)}" "https://clone-${jobId.slice(0,8)}.vercel.app"
-10. When step 9 prints "SHOPIFY_PAGE_URL=", output: TASK_COMPLETE`;
+9. When step 8 says "SSO removed", output: TASK_COMPLETE`;
 
   const messages = [{ role: 'user', content: userMessage }];
   let deployedUrl = null;
@@ -529,8 +528,27 @@ app.post('/clone', async (req, res) => {
 
     if (!deployedUrl) throw new Error('Agent completed but no Vercel URL was found in output');
 
+    console.log(`[${jobId}] Vercel done: ${deployedUrl}`);
+
+    // Upload to Shopify (runs AFTER Vercel, outside agent loop)
+    let shopifyPageUrl = null;
+    if (process.env.SHOPIFY_STORE && process.env.SHOPIFY_ACCESS_TOKEN) {
+      try {
+        const { execSync } = require('child_process');
+        const shopifyOut = execSync(
+          `SHOPIFY_STORE="${process.env.SHOPIFY_STORE}" SHOPIFY_ACCESS_TOKEN="${process.env.SHOPIFY_ACCESS_TOKEN}" node ${__dirname}/shopify-upload.js "${jobDir}" "clone-${jobId.slice(0,8)}" "${deployedUrl}"`,
+          { timeout: 60000, encoding: 'utf8' }
+        );
+        const urlMatch = shopifyOut.match(/SHOPIFY_PAGE_URL=(\S+)/);
+        if (urlMatch) shopifyPageUrl = urlMatch[1];
+        console.log(`[${jobId}] Shopify: ${shopifyPageUrl || 'failed'}`);
+      } catch (e) {
+        console.error(`[${jobId}] Shopify upload failed: ${e.message}`);
+      }
+    }
+
     console.log(`[${jobId}] Done: ${deployedUrl}`);
-    res.json({ url: deployedUrl, jobId });
+    res.json({ url: deployedUrl, shopifyUrl: shopifyPageUrl, jobId });
 
   } catch (err) {
     console.error(`[${jobId}] Error:`, err.message);
