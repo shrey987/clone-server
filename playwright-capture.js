@@ -159,9 +159,15 @@ const ASSET_EXTENSIONS = /\.(jpg|jpeg|png|webp|gif|svg|avif|ico|mp4|webm|mov|wof
           return;
         }
 
-        // Generate filename from URL
+        // Generate filename from URL - preserve extension, use hash for uniqueness
         const urlObj = new URL(reqUrl);
-        const baseName = path.basename(urlObj.pathname).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
+        let baseName = path.basename(urlObj.pathname).replace(/[^a-zA-Z0-9._-]/g, '_');
+        // Ensure extension is preserved even if name is truncated
+        const extMatch = baseName.match(/\.([a-zA-Z0-9]{1,5})$/);
+        const ext = extMatch ? extMatch[0] : '';
+        if (baseName.length > 120) {
+          baseName = baseName.slice(0, 120 - ext.length) + ext;
+        }
         const hash = crypto.createHash('md5').update(reqUrl).digest('hex').slice(0, 8);
         const fileName = `${hash}-${baseName || 'asset'}`;
         const localPath = path.join(assetsDir, fileName);
@@ -273,30 +279,59 @@ const ASSET_EXTENSIONS = /\.(jpg|jpeg|png|webp|gif|svg|avif|ico|mp4|webm|mov|wof
     let removed = 0;
     // Remove by selector
     const popupSelectors = [
+      // Email capture
       '[class*="klaviyo"]', '[id*="klaviyo"]',
       '[class*="privy"]', '[id*="privy"]',
       '[class*="optinmonster"]', '[id*="optinmonster"]',
       '[class*="justuno"]', '[id*="justuno"]',
+      // Country / locale selectors
       '[class*="country-selector"]', '[id*="country-selector"]',
+      '[class*="country-modal"]', '[id*="country-modal"]',
+      '[class*="locale-selector"]', '[id*="locale-selector"]',
+      // Cookie consent
       '[class*="cookie"]', '[id*="cookie"]',
       '[class*="consent"]', '[id*="consent"]',
-      'dialog[open]', '[role="dialog"]',
-      '.modal.is-active', '.modal--active', '.modal.active',
-      '[class*="drawer"][class*="active"]',
-      '[class*="drawer"][class*="open"]',
+      // Modals and dialogs (generic)
+      'dialog[open]', 'dialog', '[role="dialog"]',
+      '.modal.is-active', '.modal--active', '.modal.active', '.modal.show',
+      '[class*="modal"][class*="open"]', '[class*="modal"][class*="active"]', '[class*="modal"][class*="visible"]',
+      // Drawers
+      '[class*="drawer"][class*="active"]', '[class*="drawer"][class*="open"]',
+      // Size guides and fit guides
+      '[class*="size-guide"]', '[id*="size-guide"]',
+      '[class*="fit-guide"]', '[id*="fit-guide"]',
+      '[class*="sizing"]', '[id*="sizing-modal"]',
+      // Overlays and backdrops
+      '[class*="overlay"][class*="active"]', '[class*="overlay"][class*="visible"]',
+      '[class*="backdrop"]',
+      // Chat widgets that survived blocking
+      '[class*="chat-widget"]', '[id*="chat-widget"]',
+      '[class*="tidio"]', '[id*="tidio"]',
+      // Subscription/notification popups
+      '[class*="popup"][class*="active"]', '[class*="popup"][class*="visible"]', '[class*="popup"][class*="show"]',
+      // Shopify-specific
+      '[class*="shopify-chat"]', '#shopify-chat',
     ];
     popupSelectors.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => { el.remove(); removed++; });
     });
-    // Remove fixed-position overlays
-    document.querySelectorAll('div, section, aside, form, dialog').forEach(el => {
+    // Remove fixed/sticky overlays, modals, and high-z-index elements
+    document.querySelectorAll('div, section, aside, form, dialog, article, nav').forEach(el => {
       const style = window.getComputedStyle(el);
       const zIndex = parseInt(style.zIndex) || 0;
-      if (style.position === 'fixed' && zIndex > 1) {
+      const pos = style.position;
+      // Remove any fixed/sticky element with z-index > 10 that covers significant area
+      if ((pos === 'fixed' || pos === 'sticky') && zIndex > 10) {
         const rect = el.getBoundingClientRect();
-        if (rect.height > 200 || zIndex > 100) {
+        // Skip navigation bars (typically at very top, full width, short height)
+        const isNavBar = rect.top < 5 && rect.width > window.innerWidth * 0.8 && rect.height < 80;
+        if (!isNavBar) {
           el.remove(); removed++;
         }
+      }
+      // Remove any element with very high z-index that looks like an overlay
+      if (zIndex > 9000) {
+        el.remove(); removed++;
       }
     });
     // Restore body
