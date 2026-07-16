@@ -638,5 +638,128 @@ app.post('/edit', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DETERMINISTIC clone -> editor pipeline (the Tally entry point). No LLM agent.
+// Tally form submits a URL -> this captures the page deterministically, deploys its
+// assets to a Vercel clone host, and hands the HTML to the editor API, which creates
+// a clone_pages row + posts the "Open Editor" card to #luhxe-lander-editor.
+// ─────────────────────────────────────────────────────────────────────────────
+const EDITOR_API = process.env.EDITOR_API || 'https://luhxe-lander-editor.vercel.app';
+const SLACK_CHANNEL = 'C0BAJ5ABRFY'; // #luhxe-lander-editor
+const SLACK_TOKEN = (() => { try { return fs.readFileSync(`${__dirname}/.slack-token`, 'utf8').trim(); } catch (e) { return process.env.SLACK_BOT_TOKEN || ''; } })();
+async function slackPost(text) {
+  if (!SLACK_TOKEN) return;
+  try {
+    await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SLACK_TOKEN },
+      body: JSON.stringify({ channel: SLACK_CHANNEL, text, unfurl_links: false, unfurl_media: false }),
+    });
+  } catch (e) { /* a Slack hiccup must never break the pipeline */ }
+}
+
+// Collapse accidental duplicate submissions of the same URL within a short window (the team resubmits
+// while waiting for the ~90s capture; that used to make 3 rows + 3 vercel deploys + 3 cards).
+const recentClones = new Map();
+function isDuplicate(url) {
+  const now = Date.now();
+  for (const [u, t] of recentClones) if (now - t > 180000) recentClones.delete(u);
+  if (recentClones.has(url)) return true;
+  recentClones.set(url, now);
+  return false;
+}
+
+// Capture + transform, then VALIDATE the output. Throws if the page could not be cloned (empty/tiny),
+// so a broken clone never becomes a row + card. Catches the silent-failure class (e.g. Sondur 18KB).
+function captureAndTransform(url, jobDir) {
+  execSync(`node ${__dirname}/playwright-capture.js "${url}" "${jobDir}"`, { timeout: 240000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  execSync(`python3 ${__dirname}/structural-transform.py "${jobDir}" "${url}"`, { timeout: 120000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  let size = 0; try { size = fs.statSync(`${jobDir}/page.html`).size; } catch (e) {}
+  if (size < 30000) throw new Error(`the captured page was empty or too small (${size} bytes) — the site likely blocks cloning, redirects, or crashes on load`);
+}
+
+function extractUrl(body) {
+  if (!body) return null;
+  if (typeof body.url === 'string' && body.url.trim()) return body.url.trim();
+  // Tally webhook payload: { data: { fields: [ { label, type, value }, ... ] } }
+  const fields = (body.data && Array.isArray(body.data.fields)) ? body.data.fields
+               : (Array.isArray(body.fields) ? body.fields : []);
+  for (const f of fields) {
+    const v = (f && typeof f.value === 'string') ? f.value.trim() : '';
+    if (/^https?:\/\//i.test(v)) return v;
+  }
+  for (const f of fields) {
+    const v = (f && typeof f.value === 'string') ? f.value.trim() : '';
+    if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(\/|$)/i.test(v)) return v;
+  }
+  return null;
+}
+
+async function runDeterministicClone(rawUrl, brand) {
+  let url = rawUrl.trim();
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  const jobId = uuidv4();
+  const jobDir = `/tmp/job-${jobId}`;
+  const cloneName = `clone-${jobId.slice(0, 8)}`;
+  const cloneDir = `${jobDir}/${cloneName}`;
+  fs.mkdirSync(`${jobDir}/assets`, { recursive: true });
+  const token = process.env.VERCEL_TOKEN;
+
+  console.log(`[grrclone ${jobId.slice(0,8)}] capture ${url}`);
+  // Capture with ONE retry — transient headless crashes/timeouts often succeed on a second try.
+  try {
+    captureAndTransform(url, jobDir);
+  } catch (e1) {
+    console.log(`[grrclone ${jobId.slice(0,8)}] capture attempt 1 failed (${e1.message}); retrying once`);
+    try { execSync(`rm -rf ${jobDir} && mkdir -p ${jobDir}/assets`); } catch (e) {}
+    captureAndTransform(url, jobDir);
+  }
+
+  // Deploy the captured assets to a Vercel clone host (serves assets/ for the editor + publish).
+  fs.mkdirSync(cloneDir, { recursive: true });
+  fs.copyFileSync(`${jobDir}/page.html`, `${cloneDir}/index.html`);
+  execSync(`cp -r ${jobDir}/assets ${cloneDir}/assets`, { timeout: 60000 });
+  fs.writeFileSync(`${cloneDir}/vercel.json`, '{"version":2}');
+  const deployOut = execSync(`cd ${cloneDir} && vercel deploy --prod --yes --scope grrow --token ${token}`, { timeout: 240000, encoding: 'utf8' });
+  const m = deployOut.match(/https:\/\/[a-z0-9-]+\.vercel\.app/i);
+  if (!m) throw new Error('no vercel url in deploy output');
+  const cloneUrl = m[0];
+  // Make the clone host public (assets must load cross-origin).
+  try { execSync(`curl -s -X PATCH "https://api.vercel.com/v9/projects/${cloneName}?slug=grrow" -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"ssoProtection":null,"passwordProtection":null}'`, { timeout: 30000 }); } catch (e) {}
+
+  // Hand off to the editor API -> creates the clone_pages row + posts the Slack card.
+  const html = fs.readFileSync(`${jobDir}/page.html`, 'utf8');
+  const host = url.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+  const title = host.split('.')[0].replace(/\b\w/g, c => c.toUpperCase()) + ' Landing Page';
+  const resp = await fetch(`${EDITOR_API}/api/page/new`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html_content: html, clone_base_url: cloneUrl, title, original_url: url, brand: brand || 'luhxe' }),
+  });
+  if (!resp.ok) throw new Error(`editor /api/page returned ${resp.status}`);
+  const row = await resp.json();
+  try { execSync(`rm -rf ${jobDir}`); } catch (e) {}
+  return { id: row.id, editorUrl: `${EDITOR_API}/edit/${row.id}`, cloneUrl };
+}
+
+app.post('/grrclone', (req, res) => {
+  const url = extractUrl(req.body);
+  const brand = (req.body && (req.body.brand || (req.body.data && req.body.data.brand))) || null;
+  if (!url) return res.status(400).json({ error: 'no url found in submission' });
+  // Respond immediately — the capture takes ~60-120s, longer than a webhook timeout.
+  res.json({ ok: true, accepted: url });
+  let u = url.trim(); if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  if (isDuplicate(u)) { console.log(`[grrclone] duplicate submission ignored: ${u}`); return; }
+  // Instant "in progress" ack so the team sees it working (stops them resubmitting while they wait).
+  slackPost(`:hourglass_flowing_sand: Cloning ${u} … the editor link will drop here in about a minute or two.`);
+  runDeterministicClone(url, brand)
+    .then(r => console.log(`[grrclone] DONE ${url} -> row ${r.id} | editor ${r.editorUrl} | assets ${r.cloneUrl}`))
+    .catch(async (e) => {
+      console.error(`[grrclone] FAIL ${url}: ${e.message}`);
+      // The team must SEE failures (this was the silent-failure gap that hid the resilia.shop miss).
+      await slackPost(`:x: Couldn't clone ${u}\n> ${e.message}\nTry a direct product/landing URL, or resubmit. If it keeps failing, that page may block cloning.`);
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Clone server on port ${PORT}`));
